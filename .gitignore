@@ -1,0 +1,27 @@
+# Virtual environments
+.venv/
+
+# IDE settings
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+
+# Build artifacts
+main.build/
+main.dist/
+main.onefile-build/
+main.exe
+SINEX Studio.exe
+SINEX TRF Studio.exe
+
+
+# Misc OS files
+Thumbs.db
+docs/technical-reference.md
+.vscode/settings.json
