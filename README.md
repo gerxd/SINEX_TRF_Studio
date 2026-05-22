@@ -2,9 +2,13 @@
 
 SINEX TRF Studio is a PyQt5-based desktop Processing Software with Applications to Global and Regional Terrestrial Reference Frames for the SINEX File Format. The software is intended to support inspection of solution estimates, covariance structures, normal-equation recovery, and datum-related diagnostics within a single desktop workflow.
 
+This software is developed as part of a dissertation for the International Hellenic University
+
 ## Requirements
 
 Python 3.12 or later and `pip`.
+
+Required Python packages: `numpy`, `pandas`, `matplotlib`, `seaborn`, `PyQt5`, `PyQtWebEngine`, `pyqtgraph`, `folium`, `openpyxl`, `xlrd`, and `plyer`.
 
 ## Installation and Execution
 
