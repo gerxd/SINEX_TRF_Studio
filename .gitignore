@@ -18,10 +18,10 @@ main.dist/
 main.onefile-build/
 main.exe
 SINEX Studio.exe
-SINEX TRF Studio.exe
+SINEX Studio TRF.exe
+
 
 
 # Misc OS files
 Thumbs.db
-docs/technical-reference.md
 .vscode/settings.json

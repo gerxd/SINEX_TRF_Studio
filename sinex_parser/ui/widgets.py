@@ -2307,7 +2307,10 @@ class DatumWidget(QWidget):
             raise ValueError("No Helmert parameters available for plotting")
 
         if arr.size == 7:
-            labels = ["Tx", "Ty", "Tz", "Rx", "Ry", "Rz", "Scale"]
+            labels = ["tx", "ty", "tz", "δs", "εx", "εy", "εz"]
+        elif arr.size == 14:
+            labels = ["tx", "ty", "tz", "δs", "εx", "εy", "εz",
+                      "tx_v", "ty_v", "tz_v", "δs_v", "εx_v", "εy_v", "εz_v"]
         else:
             labels = [f"p{i + 1}" for i in range(arr.size)]
 
