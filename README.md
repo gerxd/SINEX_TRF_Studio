@@ -19,7 +19,6 @@ python main.py
 
 A public example dataset is provided at `examples/BKG08457.SNX`.
 
-An unsigned executable is provided as a onefile package built with Nuitka.
 
 ## Core Capabilities
 
