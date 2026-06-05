@@ -12,13 +12,14 @@ Required Python packages: `numpy`, `pandas`, `matplotlib`, `seaborn`, `PyQt5`, `
 
 ## Installation and Execution
 
+**You can run 'setup.py' to create a virtual enviroment and install dependencies in a single click.**
+
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
 
 A public example dataset is provided at `examples/BKG08457.SNX`.
-
 
 ## Core Capabilities
 
@@ -28,6 +29,30 @@ A public example dataset is provided at `examples/BKG08457.SNX`.
 - Perform datum-effect analysis, including SigmaTheta and Helmert-parameter uncertainty evaluation.
 - Visualize station distributions through an offline map interface.
 - Export parsed or computed results to `.xlsx`, `.csv`, `.txt`, and `.npy`.
+
+
+## Usage Guide
+
+1. Launch the application and click **Select SINEX File**.
+2. Open a `.snx` file. 
+3. Wait for parsing to finish. The header panel will show the detected active variance factor, the number of stations found, and whether an apriori covariance block is available.
+4. If the variance factor is missing, use **Edit** next to **Variance Factor** to compute the normal matrix. The bundled example `examples/BKG08457.SNX` requires this.
+
+### Typical workflow
+
+The User Interface is split between tabs, each for a specific workflow:
+
+- **Covariance Matrix**: inspect the loaded covariance, compute the normal matrix, compute `u = N * (Xest - Xapr)`, run the recomputation check, and export the resulting arrays.
+- **Datum Effect**: calculate SigmaTheta, optionally apply a STDEV filtering pass or **manually select episodes** using the Manual Episode Selection Button, then compute cross correlations and Helmert parameters using the corresponding buttons.
+- **Stations**: review station records and inspect the station map. Filtered stations can be highlighted after datum filtering. 
+- **Raw export**: review the detected blocks and export a selected block as-is.
+- **Info**: check version and dependency information.
+
+### Exporting results
+
+- Parsed blocks and computed products can be exported as `.xlsx`, `.csv`, `.txt`, or `.npy`.
+- Default output names are based on the loaded SINEX filename and the selected block or computed product.
+
 
 
 ## License and Citation
