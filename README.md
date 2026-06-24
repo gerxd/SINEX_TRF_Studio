@@ -12,9 +12,10 @@ Required Python packages: `numpy`, `pandas`, `matplotlib`, `seaborn`, `PyQt5`, `
 
 ## Installation and Execution
 
-**You can run 'setup.py' to create a virtual enviroment and install dependencies in a single click.**
+**Optionally, you can run the all-in-one 'setup.py' to create a virtual enviroment and install dependencies. Alternatively, you can use the following commands:**
 
 ```bash
+git clone https://github.com/gerxd/SINEX_TRF_Studio
 pip install -r requirements.txt
 python main.py
 ```
@@ -59,3 +60,6 @@ The User Interface is split between tabs, each for a specific workflow:
 
 SINEX TRF Studio is distributed under the GPL-3.0 license. Citation metadata, version information, and author details are provided in `CITATION.cff`.
 
+## Acknowledgements
+
+Special thanks to professor Ampatzidis D. for his contribution to the development of this software.

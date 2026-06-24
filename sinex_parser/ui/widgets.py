@@ -1578,10 +1578,11 @@ class InfoWidget(QWidget):
         title_label.setFont(title_font)
 
         subtitle_label = QLabel("International Hellenic University\n"
-                                "\nPython3 Processing Software with Applications to Global and Regional Terrestrial Reference Frames for the SINEX File Format.")
+                                "\nPython3 Processing Software with Applications to Global and Regional Terrestrial Reference Frames for the SINEX File Format.\n"
+                                "\nSpecial thanks to professor Ampatzidis D. for his contribution to the development of this software.")
         subtitle_label.setWordWrap(True)
 
-        version_label = QLabel("Version: 1.0.0 (preliminary)")
+        version_label = QLabel("Version: 1.0.0")
         version_label.setWordWrap(True)
         contact_header = QLabel("Contact")
         header_font = contact_header.font()
@@ -1589,7 +1590,7 @@ class InfoWidget(QWidget):
         contact_header.setFont(header_font)
 
         contact_body = QLabel(
-            "Gerasimos M. Dossas\n @ gerasimos.dossas@gmail.com geradoss@ihu.gr"
+            "Gerasimos M. Dossas\n @ gerasimos.dossas@gmail.com"
         )
         contact_body.setWordWrap(True)
         contact_body.setTextInteractionFlags(Qt.TextSelectableByMouse)
