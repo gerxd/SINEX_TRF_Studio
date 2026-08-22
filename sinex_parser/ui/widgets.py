@@ -24,6 +24,7 @@ from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage, QWebEngineS
 import pyqtgraph as pg
 import matplotlib
 from matplotlib import cm, colors as mcolors
+from matplotlib.patches import Patch
 from pyqtgraph.exporters import ImageExporter
 pg.setConfigOptions(imageAxisOrder="row-major", useOpenGL=True, antialias=False)
 matplotlib.use("Qt5Agg")  # ensure Qt5 backend
@@ -32,12 +33,36 @@ import seaborn as sns
 import folium
 from branca.element import Element
 from plyer import notification
-from ..core import logger
+from .. import __version__
+
+from ..core import (
+    logger, benchmark, remember_dialog_dir, default_save_path, ensure_suffix,
+)
+from ..core import (
+    logger, benchmark, remember_dialog_dir, default_save_path, ensure_suffix,
+)
 from ..parsers import SinexBlockParser, MatrixEstimateParser
 
 
 class StationsMapPage(QWebEnginePage):
     pass
+
+###############################################################################
+#Plot lifetime
+###############################################################################
+PLOT_FOOTER = "produced with SINEX TRF Studio - Dossas G. - IHU"
+
+
+def add_plot_footer(fig):
+    fig.text(0.99, 0.01, PLOT_FOOTER, ha="right", va="bottom",
+             fontsize=8, style="italic", color="gray")
+
+
+def set_current_figure(owner, fig=None):
+    previous = getattr(owner, '_figure', None)
+    if previous is not None:
+        plt.close(previous)
+    owner._figure = fig
 
 ###############################################################################
 #Worker Thread
@@ -53,9 +78,13 @@ class ParserWorker(QThread):
         self.skip_epochs_block = skip_epochs_block  # Store the setting
         self.skip_validation = skip_validation
         self.result_data = None
+        self.parse_generation = None
     def run(self):
         start_time = time.time()
         logger.info(f"Starting parse of file: {self.filename.name}")
+        gen = self.parse_generation
+        parse_token = benchmark.begin('parse file (all blocks)', gen)
+        stream_token = None
 
         sinex_data = {
             'header': [],
@@ -103,6 +132,7 @@ class ParserWorker(QThread):
                                     sz = len(est)
                                     parser.init_stream(sz)
                                     streaming_parser = parser
+                                    stream_token = benchmark.begin(f'stream {cur_block}', gen)
                                     logger.info(f"Stream-parsing {cur_block} ({sz}x{sz})")
                                 else:
                                     streaming_parser = None
@@ -113,6 +143,8 @@ class ParserWorker(QThread):
                         if streaming_parser is not None and streaming_parser.is_streaming:
                             parsed = streaming_parser.finalize_stream()
                             sinex_data['blocks'][cur_block] = parsed
+                            benchmark.end(stream_token)
+                            stream_token = None
                             streaming_parser = None
 
                         elif cur_block in self.block_parsers and len(cur_block_data) > 0:
@@ -146,10 +178,13 @@ class ParserWorker(QThread):
 
             logger.info(f"Finished parse of {self.filename.name} in {time.time()-start_time:.3f}s.")
             logger.info(f"Total lines read: {total_lines}, blocks: {len(sinex_data['blocks'])}.")
+            benchmark.end(parse_token)
             print(statistics)
             self.finished.emit()
 
         except Exception as e:
+            benchmark.cancel(stream_token)
+            benchmark.cancel(parse_token)
             logger.exception("Parsing error")
             self.error.emit(str(e))
 
@@ -357,6 +392,9 @@ class MatrixVisualizerWidget(QWidget):
 
     def setup_data(self, blocks: dict):
         # for asynchronous processing
+        set_current_figure(self)
+        self._pg_hover_source = None
+        self._pg_hover_meta = None
         self.blocks = blocks
         self.matrix_combo.clear()
         matrix_keys = [k for k, v in blocks.items() if isinstance(v, np.ndarray) and v.ndim == 2]
@@ -423,6 +461,17 @@ class MatrixVisualizerWidget(QWidget):
             QMessageBox.warning(self, "No Data", "Selected matrix data is not available.")
             return
 
+        if plot_type == "Heatmap" and data.size > 5000 * 5000:
+            QMessageBox.warning(
+                self, "Matrix too large for this plot",
+                f"This matrix is {data.shape[0]}x{data.shape[1]}. Seaborn draws one "
+                f"cell per element and needs roughly "
+                f"{data.nbytes * 3 / 1024 ** 3:.1f} GiB of working copies to do it, "
+                f"and the result is a solid block of colour at this size. Use Render "
+                f"Plot instead, which draws one screen pixel per element."
+            )
+            return
+
         if data.size > 5000 * 5000:
             reply = QMessageBox.question(self, 'Large Matrix Warning',
                                          f"The selected matrix is very large ({data.shape}).\n"
@@ -433,11 +482,13 @@ class MatrixVisualizerWidget(QWidget):
 
         self.info_label.setText(f"Generating '{plot_type}' for '{selected_key}'...")
         QApplication.processEvents()  # force ui update
+        set_current_figure(self)
         try:
-            fig, ax = plt.subplots(figsize=(10, 8))
             title = f"{plot_type} for {selected_key}\nShape: {data.shape}"
 
             if plot_type == "Heatmap":
+                fig, ax = plt.subplots(figsize=(10, 8))
+                set_current_figure(self, fig)
                 sns.heatmap(
                     data,
                     ax=ax,
@@ -453,6 +504,7 @@ class MatrixVisualizerWidget(QWidget):
                 real_vals = np.real(vals)
                 
                 fig, ax = plt.subplots(figsize=(16, 10))
+                set_current_figure(self, fig)
                 bars = ax.bar(range(len(real_vals)), real_vals, color="#4c72b0")
                 ax.axhline(0.0, color="black", linewidth=0.8)
                 ax.set_xlabel("Eigenvalue Index")
@@ -464,14 +516,14 @@ class MatrixVisualizerWidget(QWidget):
                     ax.bar_label(bars, fmt="%.4g", padding=3)
                 
                 fig.tight_layout()
-                fig.text(0.99, 0.01, "produced with SINEX TRF Studio - Dossas G. - IHU", ha="right", va="bottom", fontsize=8, style="italic", color="gray")
+                add_plot_footer(fig)
                 plt.show()
                 self.info_label.setText("Plot generation complete. Select another plot or load a new file.")
                 return
 
             ax.set_title(title)
             fig.tight_layout()
-            fig.text(0.99, 0.01, "produced with SINEX TRF Studio - Dossas G. - IHU", ha="right", va="bottom", fontsize=8, style="italic", color="gray")
+            add_plot_footer(fig)
 
             plt.show()
 
@@ -521,6 +573,8 @@ class MatrixVisualizerWidget(QWidget):
             cmap_name = "viridis"
 
         preview_matrix = np.asarray(matrix, dtype=np.float32)
+        # ==========================================================================
+        #preview_matrix = np.asarray(matrix, dtype=np.float32)
         source_shape = tuple(int(v) for v in matrix.shape)
         display_shape = source_shape
         metadata = {
@@ -631,7 +685,9 @@ class MatrixVisualizerWidget(QWidget):
                 self._pg_view = pg.GraphicsLayoutWidget()
                 vb = self._pg_view.addViewBox(lockAspect=True, enableMenu=False)
                 vb.setMouseEnabled(x=True, y=True)
+            
                 self._pg_img_item = pg.ImageItem(axisOrder="row-major")
+                #self._pg_img_item = pg.ImageItem(axisOrder="row-major")
                 vb.addItem(self._pg_img_item)
                 vb.invertY(False)
 
@@ -722,8 +778,10 @@ class MatrixVisualizerWidget(QWidget):
             return
 
         M = A
-        M32 = np.asarray(M, dtype=np.float32)
-        n, m = M32.shape
+        #M32 = np.asarray(M, dtype=np.float32) removed with v1.1
+        #n, m = M32.shape removed with v1.1
+        n, m = M.shape
+        
         
         reply = QMessageBox.question(
             self,
@@ -738,7 +796,10 @@ class MatrixVisualizerWidget(QWidget):
         if reply != QMessageBox.Yes:
             return
 
-        _, _, export_metadata = self._build_heatmap_state(selected_key, A, full_resolution=True)
+
+        M32, cmap, export_metadata = self._build_heatmap_state(selected_key, A, full_resolution=True)
+        # ==========================================================================
+        #_, _, export_metadata = self._build_heatmap_state(selected_key, A, full_resolution=True) - removed with v1.1
         source_tag = self._safe_name_fragment(Path(export_metadata["filename"]).stem)
         matrix_tag = self._safe_name_fragment(selected_key)
         plot_tag = self._safe_name_fragment(plot_type)
@@ -749,11 +810,12 @@ class MatrixVisualizerWidget(QWidget):
         fname, _ = QFileDialog.getSaveFileName(
             self,
             "Save Full-Resolution Image",
-            default_name,
+            default_save_path(default_name),
             "PNG Files (*.png);;TIFF Files (*.tiff *.tif);;All Files (*)",
         )
         if not fname:
             return
+        remember_dialog_dir(fname)
 
         original_text = self.info_label.text()
         self.info_label.setText(f"Exporting {n}×{m} image to {Path(fname).name}...")
@@ -765,8 +827,11 @@ class MatrixVisualizerWidget(QWidget):
             # Always create a new scene for export to ensure reliability
             # Scene reuse was causing issues when switching between different matrices
             logger.info("Creating off-screen scene for export")
-            M32, cmap, export_metadata = self._build_heatmap_state(selected_key, M, full_resolution=True)
+
             vmin, vmax = export_metadata["levels"]
+
+            # M32, cmap, export_metadata = self._build_heatmap_state(selected_key, M, full_resolution=True) removed with v1.1
+            # vmin, vmax = export_metadata["levels"] removed with v1.1
 
             img_item = pg.ImageItem(axisOrder="row-major")
             lut = cmap.getLookupTable(0.0, 1.0, 256)
@@ -954,12 +1019,16 @@ class StationsWidget(QWidget):
 
     def set_data(self, stations_data: List[dict]):
         self.stations_data = stations_data
+        #new stations -> new file -> ignore past filtering data
+        self.filtered_codes = set()
 
         available_codes = {station.get("code") for station in stations_data}
         if self._selected_station_code not in available_codes:
             self._selected_station_code = None
         if self._selected_station_code is None and stations_data:
             self._selected_station_code = stations_data[0].get("code")
+        if self._selected_station_code is None:
+            self.display.setText("select a station")
 
         self.populate_station_list()
         self.update_station_map()
@@ -1214,6 +1283,7 @@ class OperationsWidget(QWidget):
         self._normal_matrix = None
         self._apriori_matrix = None
         self._u_vector = None
+        self._dx_vector = None
 
         self._setup_ui()
 
@@ -1246,6 +1316,13 @@ class OperationsWidget(QWidget):
         #self.ver_btn.setFixedHeight(50)
         self.ver_btn.clicked.connect(self.reverse_verify)
         button_layout.addWidget(self.ver_btn)
+        self.rank_btn = QPushButton("Compute Rank of N")
+        self.rank_btn.setToolTip(
+            "Singular value decomposition of N -- Computation heavy!"
+        )
+        self.rank_btn.setEnabled(False)
+        self.rank_btn.clicked.connect(self.compute_rank)
+        button_layout.addWidget(self.rank_btn)
 
         layout.addLayout(button_layout)
 
@@ -1287,8 +1364,53 @@ class OperationsWidget(QWidget):
 
         layout.addLayout(export_line)
 
+    def reset_for_new_file(self):
+        self._normal_matrix = None
+        self._apriori_matrix = None
+        self._u_vector = None
+        self._dx_vector = None
+        self.rank_btn.setEnabled(False)
+    
+    _RANK_WARN_DIM = 3000
+    _RANK_SECONDS_AT_2500 = 1.73
+
+    def compute_rank(self):
+        if self._normal_matrix is None:
+            QMessageBox.warning(self, "Warning", "Compute Normal matrix first.")
+            return
+        N = self._normal_matrix
+        if N.shape[0] > self._RANK_WARN_DIM:
+            minutes = self._RANK_SECONDS_AT_2500 * (N.shape[0] / 2500.0) ** 3 / 60.0
+            answer = QMessageBox.question(
+                self, "Compute Rank of N",
+                f"Rank is computed by singular value decomposition, whose cost "
+                f"grows as the cube of the parameter count. For {N.shape[0]} "
+                f"parameters this is expected to take on the order of "
+                f"{minutes:.0f} minutes, during which the window will not "
+                f"respond.{chr(10)}{chr(10)}Proceed?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self.log_text.appendPlainText(
+            f"Computing rank of a {N.shape[0]}x{N.shape[0]} matrix by SVD, this may take a while."
+        )
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            t0 = time.time()
+            with benchmark.span('rank of N (SVD)'):
+                rank_n = np.linalg.matrix_rank(N)
+            elapsed = time.time() - t0
+        finally:
+            QApplication.restoreOverrideCursor()
+        logger.info(f"rank(N): {rank_n}/{N.shape[0]}")
+        logger.info(f"Rank computed in {elapsed:.3f} seconds.")
+        deficiency = N.shape[0] - int(rank_n)
+        self.log_text.appendPlainText(
+            f"rank(N) = {rank_n} of {N.shape[0]}, deficiency {deficiency}, {elapsed:.3f} s"
+        )
+
     def compute_normal_matrix(self):
-        import numpy as np
         t0 = time.time()
         parent_app = self.window()
         # reconstructed final cova
@@ -1301,6 +1423,10 @@ class OperationsWidget(QWidget):
         if var_factor is None:
             QMessageBox.critical(self, "Error", "No variance factor found.")
             return
+
+        normal_bench = benchmark.begin('compute normal matrix N')
+
+
         Qx = Cov_final / var_factor
 
         apr_key = "SOLUTION/MATRIX_APRIORI L COVA"
@@ -1318,6 +1444,7 @@ class OperationsWidget(QWidget):
             try:
                 N = np.linalg.inv(Qx) - align_apriori_info_matrix(apr_data, final_dim)
             except np.linalg.LinAlgError:
+                benchmark.cancel(normal_bench)
                 QMessageBox.critical(self, "Error", "Inversion failed during N = inv(Qx) - inv(C0).")
                 logger.warning("Inversion failed during N = inv(Qx) - inv(C0) => Normal matrix not set.")
                 return
@@ -1328,14 +1455,18 @@ class OperationsWidget(QWidget):
             try:
                 N = np.linalg.inv(Qx)
             except np.linalg.LinAlgError:
+                benchmark.cancel(normal_bench)
                 QMessageBox.critical(self, "Error", "Inversion of Qx failed.")
                 logger.warning("Failed to invert Qx => Normal matrix not set.")
                 return
             logger.info("Normal matrix computed as N = inv(Qx).")
 
         self._normal_matrix = N
-        rank_n = np.linalg.matrix_rank(N)
-        logger.info(f"rank(N): {rank_n}/{N.shape[0]}")
+        # new N -> clear past data
+        self._u_vector = None
+        self._dx_vector = None
+        self.rank_btn.setEnabled(True)
+        benchmark.end(normal_bench)
         elapsed = time.time()-t0
         logger.info(f"Normal matrix computed in {elapsed:.3f} seconds.")
 
@@ -1349,9 +1480,6 @@ class OperationsWidget(QWidget):
         QMessageBox.information(self, "Success", "Normal matrix computed.")
 
     def compute_u_vector(self):
-        import numpy as np
-        import time
-
         t0 = time.time()
         parent_app = self.window()
         if self._normal_matrix is None:
@@ -1382,6 +1510,7 @@ class OperationsWidget(QWidget):
             )
             return
 
+        u_bench = benchmark.begin('compute u = N*dx')
         dx = np.zeros((n, 1), dtype=float)
         unmatched_count = 0
 
@@ -1403,6 +1532,7 @@ class OperationsWidget(QWidget):
         self._u_vector = u
         self._dx_vector = dx  # store for reverse ver
 
+        benchmark.end(u_bench)
         dur = time.time() - t0
         logger.info(f"Computed u in {dur:.3f}s, shape={u.shape}")
         QMessageBox.information(self, "Success", "u = N*(Xest - Xapr) computed.")
@@ -1422,7 +1552,7 @@ class OperationsWidget(QWidget):
         u_computed = self._u_vector
         dx_original = self._dx_vector
 
-        # Verification: dx' = N^-1 * u  (since u = N * dx, this should recover dx)
+        # Verification: dx' = N^-1 * u  (since u = N * dx must never give dx)
         try:
             N_inv = np.linalg.inv(self._normal_matrix)
         except np.linalg.LinAlgError:
@@ -1438,12 +1568,17 @@ class OperationsWidget(QWidget):
         inf_norm_of_difference = np.linalg.norm(difference_vector, ord=np.inf)
         # Relative error
         norm_of_original = np.linalg.norm(dx_original)
-        relative_error = l2_norm_of_difference / norm_of_original if norm_of_original > 0 else 0
-
         self.log_text.appendPlainText(f"Original dx norm: {norm_of_original:.6e}")
         self.log_text.appendPlainText(f"Recomputed dx norm: {np.linalg.norm(dx_recomputed):.6e}")
         self.log_text.appendPlainText(f"Difference Norm (L2): {l2_norm_of_difference:.6e}")
         self.log_text.appendPlainText(f"Max Absolute Difference: {inf_norm_of_difference:.6e}")
+        if norm_of_original == 0:
+            # if dx is zero u = N*dx is zero for any N 
+            self.log_text.appendPlainText(
+                "recomp check is invalid because dx is zero "              
+            )
+            return
+        relative_error = l2_norm_of_difference / norm_of_original
         self.log_text.appendPlainText(f"Relative Error: {relative_error:.6e} (or {relative_error:.4%})")
         if relative_error > 1e-6:
             self.log_text.appendPlainText(
@@ -1495,8 +1630,16 @@ class OperationsWidget(QWidget):
             QMessageBox.warning(self,"Warning",f"Unknown choice: {choice}")
             return
 
-        self.export_func(data_to_export, fmt, prefix)
+        if (fmt.startswith("Excel") and getattr(data_to_export, "ndim", 0) == 2
+                and data_to_export.shape[1] > 16384):
+            QMessageBox.warning(
+                self, "Export Error",
+                f"This matrix has {data_to_export.shape[1]} columns, more than the "
+                f"16384 an .xlsx file can hold. Export it as NumPy (.npy) instead."
+            )
+            return
 
+        self.export_func(data_to_export, fmt, prefix)
 
 class CovarianceMatrixWidget(QWidget):
 #wrapper for operations + mvw
@@ -1536,7 +1679,6 @@ class InfoWidget(QWidget):
         "seaborn>=0.11.0",
         "folium>=0.12.0",
         "openpyxl>=3.0.0",
-        "xlrd>=2.0.0",
         "plyer>=2.0.0",
     )
 
@@ -1582,7 +1724,7 @@ class InfoWidget(QWidget):
                                 "\nSpecial thanks to professor Ampatzidis D. for his contribution to the development of this software.")
         subtitle_label.setWordWrap(True)
 
-        version_label = QLabel("Version: 1.0.0")
+        version_label = QLabel(f"Version: {__version__}")
         version_label.setWordWrap(True)
         contact_header = QLabel("Contact")
         header_font = contact_header.font()
@@ -1794,15 +1936,19 @@ class DatumWidget(QWidget):
         self.matrix_display_combo.addItems([
             "Sigma Theta (Σ_θ)",
             "Cross Correlations (R)",
-            "Station Ei Matrix",
             "Helmert Parameters",
         ])
-        self.station_combo = QComboBox()  # filled after stations are created
 
         controls_layout.addWidget(QLabel("Matrix to Export:"), 1, 0)
         controls_layout.addWidget(self.matrix_display_combo, 1, 1)
-        controls_layout.addWidget(QLabel("Station Selected:"), 1, 2)
-        controls_layout.addWidget(self.station_combo, 1, 3)
+
+        self.stats_btn = QPushButton("Export Statistics Report")
+        self.stats_btn.setToolTip(
+            "Export a text report with the analysis' relevant statistics"
+        )
+        self.stats_btn.clicked.connect(self.export_stats_report)
+        self.stats_btn.setEnabled(False)
+        controls_layout.addWidget(self.stats_btn, 1, 2, 1, 2)
 
         # Export/plot row
         controls_layout.addWidget(QLabel("Export Format:"), 2, 0)
@@ -1835,7 +1981,19 @@ class DatumWidget(QWidget):
             self.status_text.appendPlainText("")
         self.status_text.appendPlainText(f"--- {title.strip()} ---")
 
-    def _reset_output_state(self) -> None:
+    def _update_stats_button(self) -> None: #disabled untill everything has been run
+        ready = (
+            self.sigma_theta_matrix is not None
+            and self.cross_correlation_matrix is not None
+            and self.helmert_params is not None
+        )
+        self.stats_btn.setEnabled(ready)
+
+    def _clear_computed_products(self) -> None:
+        #clear the old results from a previous SigmaTheta run and disable the related buttons 
+        #call at the start of every calculate_sigma_theta run so a recompute successful or failed can never leave behind an old cross-corr, helmert
+
+
         self.sigma_theta_matrix = None
         self.cross_correlation_matrix = None
         self.helmert_params = None
@@ -1846,15 +2004,29 @@ class DatumWidget(QWidget):
         self.helmert_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         self.plot_btn.setEnabled(False)
-        self.show_filtered_btn.setEnabled(False)
+        self._update_stats_button()
+        self._clear_filter_products()
 
-        self.station_combo.clear()
+
+    def _clear_filter_products(self) -> None:
+        self._filtered_episodes_info = []
+        self.show_filtered_btn.setEnabled(False)
+        self._refresh_filtered_dialog_if_open()
+        parent_app = self.window()
+        stations = getattr(parent_app, "stations_widget", None)
+
+        if stations is not None and getattr(stations, "filtered_codes", None):
+            stations.set_filtered_codes(set())
+            stations.update_station_map()
+
+    def _reset_output_state(self) -> None:
+        self._clear_computed_products()
+
         if self.matrix_display_combo.count():
             self.matrix_display_combo.setCurrentIndex(0)
         self.last_matrix_selection = "Sigma Theta (Σ_θ)"
         self.last_station_selection = ""
 
-        self._filtered_episodes_info = []
         if self._filtered_dialog is not None:
             try:
                 self._filtered_dialog.close()
@@ -2212,6 +2384,12 @@ class DatumWidget(QWidget):
 
         excluded_episodes = set()
         self._append_status(f"[Filter] filtering episodes with sigma > {threshold:.3f}")
+
+        zero_sigma = sum(1 for p in sol if p.get("sigma", 0.0) == 0.0)
+        if zero_sigma:
+            message = f"[Filter] {zero_sigma} of {len(sol)} parameters have sigma 0 and cannot be flagged by this filter"
+            self._append_status(message)
+            logger.warning(message)
         
         # For each episode, check if any parameter exceeds the threshold and flag entire episode if any single parameter is bad
         for key, params in episodes.items():
@@ -2240,6 +2418,8 @@ class DatumWidget(QWidget):
             return
 
         try:
+            bench = benchmark.span('compute cross correlations')
+            bench.__enter__()
             self._append_section("Cross Correlation calculation")
 
             sigma_theta = self.sigma_theta_matrix
@@ -2286,11 +2466,13 @@ class DatumWidget(QWidget):
 
             self.export_btn.setEnabled(True)
             self.plot_btn.setEnabled(True)
+            self._update_stats_button()
 
             if self.matrix_display_combo.currentText() == "Cross Correlations (R)":
                 self.update_matrix_display()
 
             self._append_status("cross correlation calculation complete")
+            bench.__exit__(None, None, None)
             QMessageBox.information(self, "Success",
                                     f"Cross correlation matrix ({cross_corr.shape[0]}x{cross_corr.shape[1]}) calculated successfully!")
             self._refresh_matrix_inspector_if_open()
@@ -2315,10 +2497,51 @@ class DatumWidget(QWidget):
         else:
             labels = [f"p{i + 1}" for i in range(arr.size)]
 
+        # Display only, stored values stay in SI. Rotation and scale times the Earth
+        # radius give the displacement at the surface, so all bars read in mm.
+        conv_val = 6378137000.0  # GRS80 semi-major axis in mm
+        GROUPS = {
+            "translation": (1e3, "mm", "#4c72b0"),
+            "scale": (conv_val, "mm", "#dd8452"),
+            "rotation": (conv_val, "mm", "#55a868"),
+            "other": (1.0, "", "#8172b3"),
+        }
+
+        def group_of(label):
+            base = label.split("_")[0]
+            if base in ("tx", "ty", "tz"):
+                return "translation"
+            if base in ("δs",):
+                return "scale"
+            if base in ("εx", "εy", "εz"):
+                return "rotation"
+            return "other"
+
+        groups = [group_of(l) for l in labels]
+        scaled = np.array([arr[i] * GROUPS[g][0] for i, g in enumerate(groups)])
+        colors = [GROUPS[g][2] for g in groups]
+        rate = [l.endswith("_v") for l in labels]
+        tick_labels = [
+            f"{l}\n[{GROUPS[g][1]}{'/yr' if r else ''}]" if GROUPS[g][1] else l
+            for l, g, r in zip(labels, groups, rate)
+        ]
+
         fig, ax = plt.subplots(figsize=(16, 10))
-        bars = ax.bar(labels, arr, color="#4c72b0")
+        set_current_figure(self, fig)
+        ax.format_coord = lambda x, y: ""  # blank the toolbar cursor readout
+        bars = ax.bar(tick_labels, scaled, color=colors)
+        ax.grid(axis="y", linestyle=":", linewidth=0.6, color="gray")
+        ax.set_axisbelow(True)
         ax.axhline(0.0, color="black", linewidth=0.8)
-        ax.set_ylabel("Value")
+        ax.set_ylabel("Value in the unit shown under each bar")
+        present = [g for g in GROUPS if g in groups]
+        if len(present) > 1:
+            ax.legend(
+                handles=[Patch(facecolor=GROUPS[g][2],
+                               label=f"{g} [{GROUPS[g][1]}]" if GROUPS[g][1] else g)
+                         for g in present],
+                loc="best",
+            )
         if subtitle:
             ax.set_title(f"{title}\n{subtitle}")
         else:
@@ -2343,6 +2566,8 @@ class DatumWidget(QWidget):
             return
         else:
             try:
+                bench = benchmark.span('compute Helmert parameters')
+                bench.__enter__()
                 self._append_section("Helmert parameters")
                 sigma_theta = self.sigma_theta_matrix
                 st_diag = np.diag(sigma_theta)
@@ -2351,16 +2576,19 @@ class DatumWidget(QWidget):
                 if self.matrix_display_combo.currentText() == "Helmert Parameters":
                     self.update_matrix_display()
                 self._append_status("helmert parameters calculated")
-                self._render_helmert_bar(hparam, "Helmert Parameters")
-                fig = plt.gcf()
-                fig.text(0.99, 0.01, "produced with SINEX TRF Studio - Dossas G. - IHU", ha="right", va="bottom", fontsize=8, style="italic", color="gray")
-                plt.show()
+                bench.__exit__(None, None, None)
+                self._update_stats_button()
+
+                # self._render_helmert_bar(hparam, "Helmert Parameters")
+                # fig = plt.gcf()
+                # add_plot_footer(fig)
+                # plt.show()
                 self._refresh_matrix_inspector_if_open()
 
             except Exception as e:
-                error_msg = f"Error calculating cross correlations: {str(e)}"
+                error_msg = f"Error calculating Helmert parameters: {str(e)}"
                 self._append_status(f"helmert parameter error: {error_msg}")
-                logger.exception("Cross correlation calculation error")
+                logger.exception("Helmert parameter calculation error")
                 QMessageBox.critical(self, "Calculation Error", error_msg)
 
     def is_filtered(self, selection: str | None = None) -> bool: #####################
@@ -2414,12 +2642,6 @@ class DatumWidget(QWidget):
             prefix = "sigma_theta"
         elif selection == "Cross Correlations (R)":
             prefix = "cross_correlations"
-        elif selection == "Station Ei Matrix":
-            label = self.station_combo.currentText() or "station_Ei"
-            safe_label = (
-                label.replace(".", "_").replace("/", "_").replace("\\", "_").replace(" ", "_")
-            )
-            prefix = f"{safe_label}_Ei"
         elif selection == "Helmert Parameters":
             prefix = "helmert_parameters"
         else:
@@ -2464,18 +2686,6 @@ class DatumWidget(QWidget):
                     labels = ["tx", "ty", "tz", "δs", "εx", "εy", "εz"]
                 else:
                     labels = [f"P{i + 1}" for i in range(matrix.shape[0])]
-
-            elif selection == "Station Ei Matrix":
-                label = self.station_combo.currentText()  # episode label CODE.PT.SOLN
-                if not label:
-                    self._clear_matrix_display("No station selected")
-                    return
-                matrix = self._get_station_Ei(label)
-                if matrix is None:
-                    self._clear_matrix_display(f"Station {label} not available")
-                    return
-                title = f"Ei Matrix for Episode {label}"
-                labels = ["tx", "ty", "tz", "δs", "εx", "εy", "εz"]
 
             elif selection == "Helmert Parameters":
                 if self.helmert_params is None:
@@ -2609,13 +2819,6 @@ class DatumWidget(QWidget):
         elif selection == "Cross Correlations (R)":
             matrix = self.cross_correlation_matrix
             title = "Cross Correlation Matrix Heatmap"
-        elif selection == "Station Ei Matrix":
-            label = self.station_combo.currentText().strip()
-            if label:
-                # Use lazy loading to get Ei matrix on demand
-                matrix = self._get_station_Ei(label)
-                if matrix is not None:
-                    title = f"Station {label} Ei Matrix Heatmap"
         elif selection == "Helmert Parameters":
             matrix = self.helmert_params
             title = "Helmert Parameters"
@@ -2645,6 +2848,7 @@ class DatumWidget(QWidget):
                 return
 
         self._append_status(f"generating plot: {title}")
+        set_current_figure(self)
         QApplication.processEvents()
 
         try:
@@ -2654,10 +2858,11 @@ class DatumWidget(QWidget):
                 default_name = self._default_plot_filename(selection, ext="png")
                 self._render_helmert_bar(matrix, f"{title}{disp_tag}", subtitle, default_name)
                 fig = plt.gcf()
-                fig.text(0.99, 0.01, "produced with SINEX TRF Studio - Dossas G. - IHU", ha="right", va="bottom", fontsize=8, style="italic", color="gray")
+                add_plot_footer(fig)
                 plt.show()
             else:
                 fig, ax = plt.subplots(figsize=(12, 10))
+                set_current_figure(self, fig)
 
                 if selection == "Cross Correlations (R)":
                     sns.heatmap(
@@ -2706,7 +2911,7 @@ class DatumWidget(QWidget):
                     pass
 
                 plt.tight_layout()
-                fig.text(0.99, 0.01, "produced with SINEX TRF Studio - Dossas G. - IHU", ha="right", va="bottom", fontsize=8, style="italic", color="gray")
+                add_plot_footer(fig)
                 plt.show()
 
             self._append_status("plot generated")
@@ -2863,6 +3068,9 @@ class DatumWidget(QWidget):
             return
 
         self._append_section("Sigma Theta computation")
+
+        self._clear_computed_products()
+        sigma_bench = benchmark.begin('compute sigma theta')
 
         # Check if manual filtering is enabled
         if self._manual_filter_enabled:
@@ -3034,9 +3242,19 @@ class DatumWidget(QWidget):
             )
             return
 
-        # Apply mask to solution list and covariance matrix, preserving only unflagged parameters
-        filtered_sol = [p for p, k in zip(sol, keep_mask) if k]
-        filtered_Cx = Cx[np.ix_(keep_mask, keep_mask)]
+
+        if keep_mask.all():
+            filtered_sol = sol
+            filtered_Cx = Cx
+        else:
+            filtered_sol = [p for p, k in zip(sol, keep_mask) if k]
+            filtered_Cx = Cx[np.ix_(keep_mask, keep_mask)]
+
+
+        # filtered_sol = [p for p, k in zip(sol, keep_mask) if k] removed with v1.1
+        # filtered_Cx = Cx[np.ix_(keep_mask, keep_mask)] removed with v1.1
+
+
         # Build transformation matrix E from filtered data: maps station episodes to Helmert parameters
         # row_idx identifies which rows/cols of filtered_Cx correspond to used station coordinates
         E, row_idx, kdim, n_episodes = self.build_E(
@@ -3048,7 +3266,15 @@ class DatumWidget(QWidget):
             )
             return
         # Extract covariance submatrix for coordinates actually used in Helmert transformation
-        Cx_sub = filtered_Cx[np.ix_(row_idx, row_idx)]
+
+        if row_idx.size == filtered_Cx.shape[0] and np.array_equal(
+                row_idx, np.arange(filtered_Cx.shape[0])):
+            Cx_sub = filtered_Cx
+        else:
+            Cx_sub = filtered_Cx[np.ix_(row_idx, row_idx)]
+
+        # Cx_sub = filtered_Cx[np.ix_(row_idx, row_idx)] removed with v1.1
+
         self._append_status(f"[Filter] episodes used after filtering: {n_episodes}")
         self._append_status(f"E shape: {E.shape}, Cx_sub shape: {Cx_sub.shape}")
 
@@ -3062,33 +3288,50 @@ class DatumWidget(QWidget):
             #print("---------")
             #print(E)
             AtCxA = (At @ Cx_sub) @ E
+
+            # inv does not raise on a singular E^T E. Columns are scaled to unit norm
+            # first because their units differ and that alone breaks matrix_rank.
+            col_norms = np.linalg.norm(E, axis=0)
+            col_norms[col_norms == 0.0] = 1.0
+            rank = np.linalg.matrix_rank(E / col_norms)
+            if rank < E.shape[1]:
+                message = f"The design matrix E has column rank {rank} of {E.shape[1]}, so E^T E cannot be inverted. Sigma Theta was not computed."
+                self._append_status(f"ERROR: {message}")
+                logger.error(message)
+                QMessageBox.critical(self, "Rank deficient design matrix", message)
+                return
+
             AtA_inv = np.linalg.inv(AtA) 
-            AtA_pinv = np.linalg.pinv(AtA)#pseudo
+            #AtA_pinv = np.linalg.pinv(AtA)#pseudo
             sigma_theta = (AtA_inv @ AtCxA) @ AtA_inv
-            sigma_theta_pinv = (AtA_pinv @ AtCxA) @ AtA_pinv
+            #sigma_theta_pinv = (AtA_pinv @ AtCxA) @ AtA_pinv
             self._append_status(f"cond(sigma_theta): {np.linalg.cond(sigma_theta):.2e}")
             #if 
            
             self.sigma_theta_matrix = sigma_theta
 
             self.filtered_solution_estimate = filtered_sol
-            self.filtered_Cx = filtered_Cx
+
+            # self.filtered_Cx = filtered_Cx obsolete and left substantial memory footprint - removed with v1.1
             self.filtered_row_idx = row_idx
 
             diag = np.diag(sigma_theta)
             self._append_status(
                 f"Σθ diag stats: min={diag.min():.6e}, max={diag.max():.6e}, mean={diag.mean():.6e}"
             )
-            
-            self.station_combo.clear()
-            self.station_combo.addItems(self._station_labels())
-            
+
+            negative = int(np.count_nonzero(diag < 0.0))
+            if negative:
+                self._append_status(f"WARNING: {negative} of {diag.size} Σθ diagonal entries are negative, the solution is degenerate and Helmert parameters will be NaN")
+
             self.cross_corr_btn.setEnabled(True)
             self.export_btn.setEnabled(True)
             self.plot_btn.setEnabled(True)
             self.helmert_btn.setEnabled(True)
+            benchmark.end(sigma_bench)
+            self._update_stats_button()
             self._refresh_matrix_inspector_if_open()
-            
+
             QMessageBox.information(
                 self,
                 "Success",
@@ -3097,36 +3340,29 @@ class DatumWidget(QWidget):
             )
 
         except np.linalg.LinAlgError as e:
+            benchmark.cancel(sigma_bench)
+            self._clear_computed_products()
             logger.exception("SigmaTheta computation error")
             QMessageBox.critical(self, "Calculation Error", str(e))
 
     def export_data(self):
         selection = self.matrix_display_combo.currentText()
         format_str = self.format_combo.currentText()
-        station_code = self.station_combo.currentText()
 
-        try:
-            if selection == "Sigma Theta (Σ_θ)":
-                matrix = self.sigma_theta_matrix
-                prefix = "sigma_theta"
-            elif selection == "Cross Correlations (R)":
-                matrix = self.cross_correlation_matrix
-                prefix = "cross_correlations"
-            elif selection == "Station Ei Matrix":
-                label = self.station_combo.currentText()
-                matrix = self._get_station_Ei(label)
-                if matrix is None:
-                    QMessageBox.warning(self, "Export Error", f"Station {label} not available")
-                    return
-                safe = label.replace(".", "_")
-                prefix = f"{safe}_Ei"
-            elif selection == "Helmert Parameters":
-                matrix = self.helmert_params
-                prefix = "helmert_parameters"
-            else:
-                matrix = None
-                prefix = "unknown"
-        except (KeyError, AttributeError):
+        if selection == "Sigma Theta (Σ_θ)":
+            matrix = self.sigma_theta_matrix
+            prefix = "sigma_theta"
+        elif selection == "Cross Correlations (R)":
+            matrix = self.cross_correlation_matrix
+            prefix = "cross_correlations"
+        elif selection == "Helmert Parameters":
+            matrix = self.helmert_params
+            prefix = "helmert_parameters"
+        else:
+            matrix = None
+            prefix = "unknown"
+
+        if matrix is None:
             QMessageBox.warning(self, "Export Error", "Selected data not available")
             return
 
@@ -3143,20 +3379,20 @@ class DatumWidget(QWidget):
         def_name = f"{Path(original_file).stem}_{prefix}{filter_suffix}{extension}"
         filter_text = f"{format_str.split(' ')[0]} Files (*{extension})"
         out_file, _ = QFileDialog.getSaveFileName(
-            self, "Save Matrix", def_name, filter_text
+            self, "Save Matrix", default_save_path(def_name), filter_text
         )
         if not out_file:
             return
-        if not out_file.endswith(extension):
-            out_file += extension
+        remember_dialog_dir(out_file)
+        out_file = ensure_suffix(out_file, extension)
         try:
             if extension == '.xlsx':
                 df = pd.DataFrame(matrix)
                 df.to_excel(out_file, index=False, header=False)
             elif extension == '.csv':
-                np.savetxt(out_file, matrix, delimiter=',', fmt='%.12e')
+                np.savetxt(out_file, matrix, delimiter=',', fmt='%.17g')
             elif extension == '.txt':
-                np.savetxt(out_file, matrix, fmt='%.12e')
+                np.savetxt(out_file, matrix, fmt='%.17g')
             elif extension == '.npy':
                 np.save(out_file, matrix)
 
@@ -3165,6 +3401,160 @@ class DatumWidget(QWidget):
         except Exception as e:
             logger.exception("Export error")
             QMessageBox.critical(self, "Error", f"Failed to export matrix: {e}")
+
+    def _build_stats_report(self) -> str:
+        # plain text report -> collect metrics already computed by the pipeline
+        parent_app = self.window()
+        lines = []
+        add = lines.append
+
+        add("SINEX TRF Studio - Datum Effect Statistics Report")
+        add("=" * 52)
+
+        filename = ""
+        if hasattr(parent_app, "current_data") and parent_app.current_data:
+            filename = parent_app.current_data.get("metadata", {}).get("filename", "")
+        add(f"File: {filename}")
+
+        var_factor = None
+        if hasattr(parent_app, "get_variance_factor"):
+            var_factor = parent_app.get_variance_factor()
+        add(f"Variance factor: {var_factor if var_factor is not None else 'n/a'}")
+        add(f"Filter tag: {self._filter_tag() or 'none'}")
+        add("")
+
+        #SigmaTheta stats
+        st = self.sigma_theta_matrix
+        add("Sigma Theta (Σθ)")
+        add("-" * 52)
+        if st is not None:
+            diag = np.diag(st)
+            add(f"  shape: {st.shape[0]}x{st.shape[1]}")
+            add(f"  diag min: {diag.min():.6e}")
+            add(f"  diag max: {diag.max():.6e}")
+            add(f"  diag mean: {diag.mean():.6e}")
+            add(f"  cond(Σθ): {np.linalg.cond(st):.6e}")
+            sym_err = float(np.max(np.abs(st - st.T)))
+            add(f"  symmetry max|Σθ - Σθ^T|: {sym_err:.6e}")
+        else:
+            add("  not computed")
+        add("")
+
+        # cross-corr
+        add("Cross Correlations (R)")
+        add("-" * 52)
+        cc = self.cross_correlation_matrix
+        if cc is not None:
+            n = cc.shape[0]
+            off = cc[~np.eye(n, dtype=bool)]
+            add(f"  shape: {n}x{n}")
+            add(f"  off-diagonal min: {off.min():.6f}")
+            add(f"  off-diagonal max: {off.max():.6f}")
+            add(f"  mean |off-diagonal|: {np.mean(np.abs(off)):.6f}")
+            add(f"  cond(R): {np.linalg.cond(cc):.6e}")
+            sym_err = float(np.max(np.abs(cc - cc.T)))
+            add(f"  symmetry max|R - R^T|: {sym_err:.6e}")
+        else:
+            add("  not computed")
+        add("")
+
+        # Helmert 
+        add("Helmert Parameters")
+        add("-" * 52)
+        hp = self.helmert_params
+        if hp is not None:
+            flat = np.asarray(hp, dtype=float).flatten()
+            if flat.size == 7:
+                names = ["tx", "ty", "tz", "ds", "ex", "ey", "ez"]
+            elif flat.size == 14:
+                names = ["tx", "ty", "tz", "ds", "ex", "ey", "ez",
+                         "tx_v", "ty_v", "tz_v", "ds_v", "ex_v", "ey_v", "ez_v"]
+            else:
+                names = [f"p{i + 1}" for i in range(flat.size)]
+            for name, val in zip(names, flat):
+                add(f"  {name}: {val:.6e}")
+        else:
+            add("  not computed")
+        add("")
+        add("Station Metrics")
+        add("-" * 52)
+        sol = None
+        if hasattr(parent_app, "current_data") and parent_app.current_data:
+            sol = parent_app.current_data["blocks"].get("SOLUTION/ESTIMATE")
+        if sol:
+            episodes = self.parse_station_coordinates(sol)
+            add(f"  station episodes with complete xyz: {len(episodes)}")
+            add(f"  total estimated parameters: {len(sol)}")
+            add("")
+
+            add("  (σ) of the estimates, different units ")
+            add("")
+            add(f"    {'Type':8} {'Unit':10} {'Count':>7} {'Zero':>7} "
+                f"{'Min':>13} {'Max':>13} {'Mean':>13}")
+            by_type = {}
+            for p in sol:
+                key = (str(p.get("type", "")), str(p.get("unit", "")))
+                by_type.setdefault(key, []).append(p.get("sigma", np.nan))
+            for ptype, unit in sorted(by_type):
+                vals = np.asarray(by_type[(ptype, unit)], dtype=float)
+                finite = vals[np.isfinite(vals)]
+                n_zero = int(np.count_nonzero(finite == 0.0))
+                usable = finite[finite > 0.0]
+                if usable.size:
+                    stats = (f"{usable.min():13.6e} {usable.max():13.6e} "
+                             f"{usable.mean():13.6e}")
+                else:
+                    stats = f"{'n/a':>13} {'n/a':>13} {'n/a':>13}"
+                add(f"    {ptype:8} {unit:10} {finite.size:7d} {n_zero:7d} {stats}")
+            add("")
+            add("  0 = absent or unparseable value - not included in the min, max, and mean")
+            add(" ")
+
+        else:
+            add("  no SOLUTION/ESTIMATE data")
+        add("")
+        add("Filtering")
+        add("-" * 52)
+        info = getattr(self, "_filtered_episodes_info", []) or []
+        add(f"  episodes excluded by filter: {len(info)}")
+        add(f"  filtering active: {self.is_filtered()}")
+
+        return "\n".join(lines) + "\n"
+
+    def export_stats_report(self):
+        if (
+            self.sigma_theta_matrix is None
+            or self.cross_correlation_matrix is None
+            or self.helmert_params is None
+        ):
+            QMessageBox.warning(
+                self, "Statistics Report",
+                "Compute SigmaTheta, Cross Correlations, and Helmert Parameters first."
+            )
+            return
+
+        parent_app = self.window()
+        original_file = ""
+        if hasattr(parent_app, "current_data") and parent_app.current_data:
+            original_file = parent_app.current_data["metadata"].get("filename", "")
+        filter_suffix = self._filter_tag() if self.is_filtered() else ""
+        def_name = f"{Path(original_file).stem}_datum_stats{filter_suffix}.txt"
+
+        out_file, _ = QFileDialog.getSaveFileName(
+            self, "Save Statistics Report", default_save_path(def_name), "Text Files (*.txt)"
+        )
+        if not out_file:
+            return
+        remember_dialog_dir(out_file)
+        out_file = ensure_suffix(out_file, ".txt")
+        try:
+            report = self._build_stats_report()
+            with open(out_file, "w", encoding="utf-8") as f:
+                f.write(report)
+            self._append_status(f"exported statistics report to {out_file}")
+        except Exception as e:
+            logger.exception("Statistics report export error")
+            QMessageBox.critical(self, "Error", f"Failed to export report: {e}")
 #################################
 class MatrixInspectorDialog(QDialog):
     def __init__(self, host: "DatumWidget", parent=None):
@@ -3563,7 +3953,7 @@ class FileInfoWidget(QWidget):
         self.station_label = QLabel("Stations Found (SITE/ID): --")
         self.aprcov_label = QLabel("Apriori Covariance Found: --")
         # font styling
-        label_style = "font-size: 11px; color: #2c3e50;"
+        label_style = "font-size: 18px; color: #2c3e50;"
         self.vf_label.setStyleSheet(label_style)
         self.station_label.setStyleSheet(label_style)
         self.aprcov_label.setStyleSheet(label_style)

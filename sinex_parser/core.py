@@ -30,7 +30,257 @@ logger = logging.getLogger(__name__)
 logging.getLogger('matplotlib.font_manager').setLevel(logging.INFO)
 
 ###############################################################################
-# 2)Helper
+# 2) Benchmarks
+###############################################################################
+
+import threading as _threading
+import time as _time
+
+_MB = 1024.0 * 1024.0
+
+
+def _process_memory_mb():
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Counters(ctypes.Structure):
+            _fields_ = [
+                ('cb', wintypes.DWORD),
+                ('PageFaultCount', wintypes.DWORD),
+                ('PeakWorkingSetSize', ctypes.c_size_t),
+                ('WorkingSetSize', ctypes.c_size_t),
+                ('QuotaPeakPagedPoolUsage', ctypes.c_size_t),
+                ('QuotaPagedPoolUsage', ctypes.c_size_t),
+                ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t),
+                ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
+                ('PagefileUsage', ctypes.c_size_t),
+                ('PeakPagefileUsage', ctypes.c_size_t),
+            ]
+
+        counters = _Counters()
+        counters.cb = ctypes.sizeof(counters)
+        get_info = ctypes.windll.psapi.GetProcessMemoryInfo
+        get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(_Counters), wintypes.DWORD]
+        get_info.restype = wintypes.BOOL
+        handle = ctypes.windll.kernel32.GetCurrentProcess()
+        if get_info(handle, ctypes.byref(counters), counters.cb):
+            return counters.WorkingSetSize / _MB, counters.PeakWorkingSetSize / _MB
+    except Exception:
+        pass
+    return float('nan'), float('nan')
+
+
+class _BenchmarkSpan:
+    __slots__ = ('name', 'generation', 't0', 'rss0')
+
+    def __init__(self, name, generation, t0, rss0):
+        self.name = name
+        self.generation = generation
+        self.t0 = t0
+        self.rss0 = rss0
+
+
+class _NullSpan:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _ActiveSpan:
+    __slots__ = ('recorder', 'name', 'generation', 'token')
+
+    def __init__(self, recorder, name, generation):
+        self.recorder = recorder
+        self.name = name
+        self.generation = generation
+        self.token = None
+
+    def __enter__(self):
+        self.token = self.recorder.begin(self.name, self.generation)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.recorder.end(self.token)
+        return False
+
+
+class BenchmarkRecorder:
+
+    def __init__(self):
+        self.enabled = False
+        self.generation = 0
+        self.on_update = None
+        self._lock = _threading.Lock()
+        self.reset()
+
+    def reset(self):
+        self.file_name = ''
+        self.file_size_bytes = 0
+        self.peak_rss_mb = float('nan')
+        with self._lock:
+            self.spans = []
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = bool(enabled)
+        if not self.enabled:
+            self.reset()
+        self._notify()
+
+    def start_file(self, filename: str, size_bytes: int, generation: int = None) -> None:
+        self.file_name = filename
+        self.file_size_bytes = size_bytes
+        self.peak_rss_mb = float('nan')
+        with self._lock:
+            self.spans = []
+            if generation is not None:
+                self.generation = generation
+        self._notify()
+
+    def begin(self, name: str, generation: int = None):
+        if not self.enabled:
+            return None
+        return _BenchmarkSpan(name, generation, _time.perf_counter(), _process_memory_mb()[0])
+
+    def end(self, token) -> None:
+        if token is None:
+            return
+        seconds = _time.perf_counter() - token.t0
+        current, peak = _process_memory_mb()
+        with self._lock:
+            if token.generation is not None and token.generation != self.generation:
+                return
+            self.peak_rss_mb = peak
+            self.spans.append({
+                'name': token.name,
+                'seconds': seconds,
+                'rss_delta_mb': current - token.rss0,
+                'rss_after_mb': current,
+            })
+        self._notify()
+
+    def cancel(self, token) -> None:
+        return
+
+    def span(self, name: str, generation: int = None):
+        if not self.enabled:
+            return _NullSpan()
+        return _ActiveSpan(self, name, generation)
+
+    def has_data(self) -> bool:
+        return bool(self.spans)
+
+    def _notify(self) -> None:
+        callback = self.on_update
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                pass
+
+    def render_text(self) -> str:
+        name_w, time_w, d_w, a_w = 40, 12, 14, 14
+        header = (f'{"Operation":{name_w}} {"Time (s)":>{time_w}} '
+                  f'{"RSS delta MB":>{d_w}} {"RSS after MB":>{a_w}}')
+        width = len(header)
+        lines = []
+        add = lines.append
+        add('SINEX TRF Studio - Benchmark Report')
+        add('=' * width)
+        add(f'File: {self.file_name or "n/a"}')
+        if self.file_size_bytes:
+            add(f'File size: {self.file_size_bytes} bytes '
+                f'({self.file_size_bytes / _MB:.3f} MiB)')
+        else:
+            add('File size: n/a')
+        add('')
+
+        add(header)
+        add('-' * width)
+        for s in self.spans:
+            delta = s['rss_delta_mb']
+            after = s['rss_after_mb']
+            d_txt = f'{delta:+.1f}' if delta == delta else 'n/a'
+            a_txt = f'{after:.1f}' if after == after else 'n/a'
+            add(f"{s['name']:{name_w}} {s['seconds']:{time_w}.3f} "
+                f"{d_txt:>{d_w}} {a_txt:>{a_w}}")
+        total = sum(s['seconds'] for s in self.spans)
+        add('-' * width)
+        add(f'{"Total (recorded spans)":{name_w}} {total:{time_w}.3f}')
+        peak = self.peak_rss_mb
+        add('')
+        add(f'Peak for the whole process: '
+            f'{peak:.1f} MB' if peak == peak else
+            'Peak for the whole process: n/a')
+        return '\n'.join(lines) + '\n'
+
+
+benchmark = BenchmarkRecorder()
+
+###############################################################################
+# 3) File dialog directory memory
+###############################################################################
+
+import os as _os
+
+#v1.1:keep directory on reset
+_SETTINGS_ORG = 'International Hellenic University'
+_SETTINGS_APP = 'SINEX TRF Studio'
+_SETTINGS_KEY = 'dialogs/last_directory'
+
+_last_dialog_dir = None
+
+
+def _settings():
+    try:
+        from PyQt5.QtCore import QSettings
+    except ImportError:
+        return None
+    return QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+
+
+def get_dialog_dir() -> str:
+    global _last_dialog_dir
+    if _last_dialog_dir is None:
+        _last_dialog_dir = ''
+        store = _settings()
+        if store is not None:
+            stored = store.value(_SETTINGS_KEY, '')
+            if isinstance(stored, str) and stored and _os.path.isdir(stored):
+                _last_dialog_dir = stored
+    return _last_dialog_dir
+
+
+def remember_dialog_dir(path: str) -> None:
+    global _last_dialog_dir
+    if not path:
+        return
+    d = _os.path.dirname(path)
+    if not d:
+        return
+    _last_dialog_dir = d
+    store = _settings()
+    if store is not None:
+        store.setValue(_SETTINGS_KEY, d)
+
+
+def default_save_path(default_name: str) -> str:
+    directory = get_dialog_dir()
+    if directory:
+        return _os.path.join(directory, default_name)
+    return default_name
+
+
+def ensure_suffix(path: str, suffix: str) -> str:
+    if path.lower().endswith(suffix.lower()):
+        return path
+    return path + suffix
+
+
+###############################################################################
+# 4)Helper
 ###############################################################################
 
 def _extract_active_apriori_subspace(src: np.ndarray, target_dim: int) -> tuple[np.ndarray, np.ndarray]:

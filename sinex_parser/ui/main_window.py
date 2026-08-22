@@ -7,14 +7,19 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QProgressBar, QTabWidget,
     QMessageBox, QFileDialog, QComboBox, QPlainTextEdit, QCheckBox, QApplication, QSizePolicy
 )
-from PyQt5.QtCore import QUrl
+from PyQt5.QtCore import QUrl, pyqtSignal
 import numpy as np
 from pathlib import Path
 from plyer import notification
 
 from PyQt5 import QtGui, QtCore
 
-from ..core import logger, SinexFileValidator
+from .. import __version__
+from ..core import (
+    logger, SinexFileValidator, benchmark,
+    remember_dialog_dir, default_save_path, ensure_suffix,
+)
+
 from ..parsers import create_parsers
 from ..ui.widgets import (
     ParserWorker, CovarianceMatrixWidget, StationsWidget,
@@ -23,15 +28,21 @@ from ..ui.widgets import (
 
 
 class SINEXParserApp(QMainWindow):
+    benchmark_updated = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.block_parsers = create_parsers()
         self.validator = SinexFileValidator()
         self.current_data = None
         self.custom_variance_factor = None
+        self._parse_generation = 0
+        self._active_workers = set()
         self.init_ui()
+        self.benchmark_updated.connect(self._refresh_benchmark_button)
+        benchmark.on_update = self.benchmark_updated.emit
         # warning
-        logger.warning("======== SINEX TRF Studio version 1.0.0 ========")
+        logger.warning(f"======== SINEX TRF Studio version {__version__} ========")
         logger.warning(" ")
         #logger.warning("Preliminary test version. Verify all results before use.")
 
@@ -81,6 +92,22 @@ class SINEXParserApp(QMainWindow):
         self.select_file_button.setFixedSize(500, 60)
         self.select_file_button.clicked.connect(self.select_sinex_file)
         controls_layout.addWidget(self.select_file_button)
+
+        self.benchmark_checkbox = QCheckBox("Record benchmark")
+        self.benchmark_checkbox.setChecked(False)
+        self.benchmark_checkbox.setToolTip(
+            "Record timings and peak process memory"   
+        )
+        self.benchmark_checkbox.toggled.connect(self._set_benchmark_enabled)
+
+        self.benchmark_export_button = QPushButton("Export Benchmark Report")
+        self.benchmark_export_button.setEnabled(False)
+        self.benchmark_export_button.clicked.connect(self.export_benchmark_report)
+
+        benchmark_row = QHBoxLayout()
+        benchmark_row.addWidget(self.benchmark_checkbox)
+        benchmark_row.addWidget(self.benchmark_export_button)
+        controls_layout.addLayout(benchmark_row)
 
         self.skip_validation = QCheckBox("Skip file validation")
         self.skip_validation.setChecked(True)
@@ -193,14 +220,43 @@ class SINEXParserApp(QMainWindow):
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
+    def _set_benchmark_enabled(self, enabled: bool) -> None:
+        benchmark.set_enabled(bool(enabled))
+        self._refresh_benchmark_button()
+
+    def _refresh_benchmark_button(self) -> None:
+        self.benchmark_export_button.setEnabled(benchmark.has_data())
+
+    def export_benchmark_report(self) -> None:
+        if not benchmark.has_data():
+            QMessageBox.warning(self, "Benchmark Report", "No benchmark data is available.")
+            return
+        original_file = benchmark.file_name or "sinex"
+        def_name = f"{Path(original_file).stem}_benchmark.txt"
+        out_file, _ = QFileDialog.getSaveFileName(
+            self, "Save Benchmark Report", default_save_path(def_name), "Text Files (*.txt)"
+        )
+        if not out_file:
+            return
+        remember_dialog_dir(out_file)
+        out_file = ensure_suffix(out_file, ".txt")
+        try:
+            with open(out_file, "w", encoding="utf-8") as f:
+                f.write(benchmark.render_text())
+            logger.info(f"Exported benchmark report to {out_file}")
+        except Exception as e:
+            logger.exception("Benchmark export error")
+            QMessageBox.critical(self, "Error", f"Failed to export benchmark report: {e}")
+
     def select_sinex_file(self):
         fname, _ = QFileDialog.getOpenFileName(
             self,
             "Select SINEX File",
-            "",
+            default_save_path(""),
             "SINEX files (*.sinex *.snx);;All files (*.*)"
         )
         if fname:
+            remember_dialog_dir(fname)
             logger.info("----- New File -----")
             fpath = Path(fname)
             self.file_label.setText(fpath.name)
@@ -218,10 +274,21 @@ class SINEXParserApp(QMainWindow):
             self.progress_bar.setRange(0, 0)
             skip_epochs = self.skip_epoch.isChecked()
             skip_val = self.skip_validation.isChecked()
-            self.worker = ParserWorker(fpath, self.block_parsers, skip_epochs_block=skip_epochs, skip_validation=skip_val)
-            self.worker.finished.connect(self.handle_parsing_complete)
-            self.worker.error.connect(self.handle_parsing_error)
-            self.worker.start()
+            self._parse_generation += 1
+            try:
+                size = fpath.stat().st_size
+            except OSError:
+                size = 0
+
+            benchmark.start_file(fpath.name, size, generation=self._parse_generation)
+            worker = ParserWorker(fpath, self.block_parsers, skip_epochs_block=skip_epochs, skip_validation=skip_val)
+            # tag worker with the current parse generation so a stale worker that finishes late cannot overwrite newer data
+            worker.parse_generation = self._parse_generation
+            self._active_workers.add(worker)
+            worker.finished.connect(self.handle_parsing_complete)
+            worker.error.connect(self.handle_parsing_error)
+            self.worker = worker
+            worker.start()
 
     def get_loaded_matrix(self) -> np.ndarray:
         if not self.current_data:
@@ -243,7 +310,13 @@ class SINEXParserApp(QMainWindow):
     def handle_parsing_complete(self):
         # called after parserworker ends
         # avoids passing large objects through the Qt signal system
-        if not hasattr(self, 'worker') or self.worker.result_data is None:
+        worker = self.sender()
+        if worker is not None:
+            self._active_workers.discard(worker)
+        if worker is not self.worker or getattr(worker, "parse_generation", 0) != self._parse_generation:
+            logger.info("Ignoring completion signal from a superseded parse worker.")
+            return
+        if self.worker.result_data is None:
             QMessageBox.critical(self, "Error", "Parsing finished, but no data was returned from the worker.")
             self.progress_bar.setVisible(False)
             return
@@ -255,8 +328,12 @@ class SINEXParserApp(QMainWindow):
         if self.datum_widget:
             filename = data.get("metadata", {}).get("filename", "")
             self.datum_widget.log_new_file_loaded(filename)
+        #reset computed data from any previous file
+        if self.covariance_widget and self.covariance_widget.operations_widget:
+            self.covariance_widget.operations_widget.reset_for_new_file()
         self.progress_bar.setVisible(False)
         self.export_button.setEnabled(True)
+        self._refresh_benchmark_button()
         # update ui
         if self.datum_widget:
             self.datum_widget.sigma_theta_btn.setEnabled(True)
@@ -271,6 +348,8 @@ class SINEXParserApp(QMainWindow):
             self.stations_widget.set_data(site_data)
         else:
             logger.info("No SITE/ID data found.")
+            # clear stations left over from any previous file
+            self.stations_widget.set_data([])
         # Update the raw export display.
         self.update_block_display()
         QMessageBox.information(self, "Success", "SINEX file parsed successfully!")
@@ -280,10 +359,33 @@ class SINEXParserApp(QMainWindow):
         )
 
     def handle_parsing_error(self, err):
+        worker = self.sender()
+        if worker is not None:
+            self._active_workers.discard(worker)
+        if worker is not self.worker or getattr(worker, "parse_generation", 0) != self._parse_generation:
+            # for a past worker that reported an error leave the newer parse unaffected
+            logger.info("Ignoring error from a superseded parse worker.")
+            return
         self.progress_bar.setVisible(False)
+        self.discard_loaded_file()
         QMessageBox.critical(self, "Error", f"Parsing error: {err}")
+
+
+    def discard_loaded_file(self) -> None:
+        self.current_data = None
+        self.custom_variance_factor = None
+        self.file_label.setText("No file selected")
+        self.export_button.setEnabled(False)
         if self.file_info_widget:
             self.file_info_widget.clear_display()
+        if self.datum_widget:
+            self.datum_widget.sigma_theta_btn.setEnabled(False)
+            self.datum_widget._reset_output_state()
+        if self.covariance_widget and self.covariance_widget.operations_widget:
+            self.covariance_widget.operations_widget.reset_for_new_file()
+        if self.stations_widget:
+            self.stations_widget.set_data([])
+        self.block_combo.clear()
 
     def export_data(self):
         if not self.current_data:
@@ -304,11 +406,23 @@ class SINEXParserApp(QMainWindow):
         def_name = f"{Path(original_file).stem}_{block_key.replace('/', '_')}{extension}"
 
         out_file, _ = QFileDialog.getSaveFileName(
-            self, "Save Block Data", def_name, file_filter
+            self, "Save Block Data", default_save_path(def_name), file_filter
         )
         if out_file:
+            remember_dialog_dir(out_file)
+
             data_to_export = self.current_data['blocks'].get(block_key)
+            if (fmt.startswith("Excel") and getattr(data_to_export, "ndim", 0) == 2
+                    and data_to_export.shape[1] > 16384):
+                QMessageBox.warning(
+                    self, "Export Error",
+                    f"This block has {data_to_export.shape[1]} columns, more than the "
+                    f"16384 an .xlsx file can hold. Export it as NumPy (.npy) instead."
+                )
+                return
             try:
+            # data_to_export = self.current_data['blocks'].get(block_key)
+            # try:
                 if data_to_export is None:
                     raise ValueError(f"No data for block: {block_key}")
                 parser = self.block_parsers.get(block_key)
@@ -337,11 +451,11 @@ class SINEXParserApp(QMainWindow):
         def_name = f"{Path(orig_file).stem}_{prefix}{extension}"
 
         out_file, _ = QFileDialog.getSaveFileName(
-            self, "Save Data", def_name, file_filter
+            self, "Save Data", default_save_path(def_name), file_filter
         )
         if out_file:
-            if not out_file.endswith(extension):
-                out_file += extension
+            remember_dialog_dir(out_file)
+            out_file = ensure_suffix(out_file, extension)
             matrix_parser = self.block_parsers.get('SOLUTION/MATRIX_ESTIMATE L COVA')
             if matrix_parser is None:
                 QMessageBox.critical(self, "Error", "No parser for matrix export!")

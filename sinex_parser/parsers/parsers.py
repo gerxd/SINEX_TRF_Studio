@@ -238,11 +238,11 @@ class MatrixEstimateParser(SinexBlockParser):
     def export(self, data: np.ndarray, filename: Path, format: str):
         df = pd.DataFrame(data)
         if format == 'xlsx':
-            df.to_excel(filename, index=False, header=False, float_format='%.12e')
+            df.to_excel(filename, index=False, header=False)
         elif format == 'csv':
-            df.to_csv(filename, index=False, header=False, float_format='%.12e')
+            df.to_csv(filename, index=False, header=False, float_format='%.17g')
         elif format == 'txt':
-            np.savetxt(filename, data, fmt='%.12e', delimiter='\t')
+            np.savetxt(filename, data, fmt='%.17g', delimiter='\t')
         elif format == 'npy':
             np.save(filename, data)
         else:

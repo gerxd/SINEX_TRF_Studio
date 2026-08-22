@@ -1,9 +1,9 @@
 cff-version: 1.2.0
 message: "Cite as below."
 title: "SINEX TRF Studio"
-version: 1.0.0
+version: 1.1.0
 license: GPL-3.0
-date-released: 2026-05-04
+date-released: 2026-09-06
 authors:
   - family-names: Dossas
     given-names: Gerasimos M.

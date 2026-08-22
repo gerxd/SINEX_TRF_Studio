@@ -35,6 +35,15 @@ if ($Clean) {
     Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $projectRoot "SINEX Studio.exe")
 }
 
+$initFile = Join-Path $projectRoot "sinex_parser\__init__.py"
+$versionMatch = Select-String -Path $initFile -Pattern "__version__\s*=\s*'(\d+\.\d+\.\d+)'" | Select-Object -First 1
+if (-not $versionMatch) {
+    Write-Error "Could not read __version__ from $initFile"
+    exit 1
+}
+$appVersion = $versionMatch.Matches[0].Groups[1].Value
+$fileVersion = "$appVersion.0"
+
 $arguments = @(
     "-m", "nuitka",
     "--standalone",
@@ -53,8 +62,8 @@ $arguments = @(
     "--include-data-dir=$translationsArg=PyQt5/Qt5/translations",
     '--output-filename="SINEX TRF Studio.exe"',
     "--windows-product-name=SINEX TRF Studio",
-    "--windows-product-version=1.0.0",
-    "--windows-file-version=1.0.0.1",
+    "--windows-product-version=$appVersion",
+    "--windows-file-version=$fileVersion",
     "--windows-company-name=International Hellenic University",
     "--windows-file-description=SINEX TRF Studio - Gerasimos M. Dossas <gerasimos.dossas@gmail.com>",
     "main.py"

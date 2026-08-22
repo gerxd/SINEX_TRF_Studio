@@ -8,7 +8,7 @@ This software is developed as part of a dissertation for the International Helle
 
 Python 3.12 or later and `pip`.
 
-Required Python packages: `numpy`, `pandas`, `matplotlib`, `seaborn`, `PyQt5`, `PyQtWebEngine`, `pyqtgraph`, `folium`, `openpyxl`, `xlrd`, and `plyer`.
+Required Python packages: `numpy`, `pandas`, `matplotlib`, `seaborn`, `PyQt5`, `PyQtWebEngine`, `pyqtgraph`, `folium`, `openpyxl`, and `plyer`.
 
 ## Installation and Execution
 
@@ -53,6 +53,7 @@ The User Interface is split between tabs, each for a specific workflow:
 
 - Parsed blocks and computed products can be exported as `.xlsx`, `.csv`, `.txt`, or `.npy`.
 - Default output names are based on the loaded SINEX filename and the selected block or computed product.
+- For full precision, use `.npy` as it uses the raw float64 values.`.csv` and `.txt` are also at full float64 precision. `.xlsx` stores 16 digits.
 
 
 
