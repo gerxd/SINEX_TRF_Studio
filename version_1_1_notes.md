@@ -1,5 +1,12 @@
 # Patch Notes
 
+## 1.1.1
+
+- Added citation info
+
+Bug fixes:
+- Fixed typo
+
 ## 1.1.0
 
 Bug fixes:

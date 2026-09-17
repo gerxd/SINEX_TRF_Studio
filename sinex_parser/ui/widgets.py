@@ -464,11 +464,7 @@ class MatrixVisualizerWidget(QWidget):
         if plot_type == "Heatmap" and data.size > 5000 * 5000:
             QMessageBox.warning(
                 self, "Matrix too large for this plot",
-                f"This matrix is {data.shape[0]}x{data.shape[1]}. Seaborn draws one "
-                f"cell per element and needs roughly "
-                f"{data.nbytes * 3 / 1024 ** 3:.1f} GiB of working copies to do it, "
-                f"and the result is a solid block of colour at this size. Use Render "
-                f"Plot instead, which draws one screen pixel per element."
+                f"Use Render Plot instead, which draws one screen pixel per element."
             )
             return
 
@@ -1383,9 +1379,8 @@ class OperationsWidget(QWidget):
             minutes = self._RANK_SECONDS_AT_2500 * (N.shape[0] / 2500.0) ** 3 / 60.0
             answer = QMessageBox.question(
                 self, "Compute Rank of N",
-                f"Rank is computed by singular value decomposition, whose cost "
-                f"grows as the cube of the parameter count. For {N.shape[0]} "
-                f"parameters this is expected to take on the order of "
+                f"Rank is computed by singular value decomposition. For {N.shape[0]} "
+                f"parameters this is expected to take the order of "
                 f"{minutes:.0f} minutes, during which the window will not "
                 f"respond.{chr(10)}{chr(10)}Proceed?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
@@ -2533,7 +2528,6 @@ class DatumWidget(QWidget):
         ax.grid(axis="y", linestyle=":", linewidth=0.6, color="gray")
         ax.set_axisbelow(True)
         ax.axhline(0.0, color="black", linewidth=0.8)
-        ax.set_ylabel("Value in the unit shown under each bar")
         present = [g for g in GROUPS if g in groups]
         if len(present) > 1:
             ax.legend(

@@ -60,6 +60,7 @@ The User Interface is split between tabs, each for a specific workflow:
 ## License and Citation
 
 SINEX TRF Studio is distributed under the GPL-3.0 license. Citation metadata, version information, and author details are provided in `CITATION.cff`.
+Use 10.5281/zenodo.22548394 for citations.
 
 ## Acknowledgements
 
