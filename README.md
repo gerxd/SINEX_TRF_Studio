@@ -5,20 +5,17 @@ SINEX TRF Studio is a PyQt5-based desktop Processing Software with Applications 
 
 This software is developed as part of a dissertation for the International Hellenic University
 
-## Requirements
+## Installation
 
-Python 3.12 or later and `pip`.
+There are 2 OS-specific executables included. They install the dependencies and set an active virtual environment on first run.
 
-Required Python packages: `numpy`, `pandas`, `matplotlib`, `seaborn`, `PyQt5`, `PyQtWebEngine`, `pyqtgraph`, `folium`, `openpyxl`, and `plyer`.
-
-## Installation and Execution
-
-**Optionally, you can run the all-in-one 'setup.py' to create a virtual enviroment and install dependencies. Alternatively, you can use the following commands:**
+Manual Install:
 
 ```bash
 git clone https://github.com/gerxd/SINEX_TRF_Studio
-pip install -r requirements.txt
-python main.py
+uv venv .venv --python 3.12
+uv pip install -r requirements.txt
+uv run main.py
 ```
 
 A public example dataset is provided at `examples/BKG08457.SNX`.

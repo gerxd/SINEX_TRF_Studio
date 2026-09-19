@@ -1,5 +1,14 @@
 # Patch Notes
 
+## 1.1.2
+
+New features:
+- One-click setup and launch. Run `run_windows.bat` on Windows or `run_macos_linux.sh` on macOS and Linux. The first run creates a private environment and installs the dependencies, and later runs open the application directly.
+
+Changes:
+- The setup no longer uses `pip` or `setup.py`. `uv` installs the dependencies into a private environment.
+- The license file now carries the full GPLv3 text.
+
 ## 1.1.1
 
 - Added citation info
