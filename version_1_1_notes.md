@@ -7,6 +7,9 @@ New features:
 
 Changes:
 - The setup no longer uses `pip` or `setup.py`. `uv` installs the dependencies into a private environment.
+- The setup reports folder paths it cannot use instead of failing.
+- On Linux the setup names the system libraries it needs.
+- The application no longer depends on the window it was started from.
 - The license file now carries the full GPLv3 text.
 
 ## 1.1.1

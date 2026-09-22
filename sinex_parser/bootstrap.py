@@ -1,3 +1,4 @@
+import ctypes
 import hashlib
 import json
 import os
@@ -29,6 +30,34 @@ UV_SOURCES = (
     "https://github.com/astral-sh/uv/releases/latest/download/",
 )
 UV_USER_AGENT = "SINEX-TRF-Studio"
+MAX_WINDOWS_PATH = 240
+EXPLAINED = 2
+DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+MISSING_LIBRARY = "cannot open shared object file"
+LINUX_PACKAGES = (
+    "libnss3 libnspr4 libasound2 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 "
+    "libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 "
+    "libxkbcommon-x11-0"
+)
+
+
+def ansi_codepage():
+    return "cp" + str(ctypes.windll.kernel32.GetACP())
+
+
+def path_is_supported():
+    if os.name != "nt":
+        return True
+    try:
+        str(ROOT).encode(ansi_codepage())
+    except (UnicodeEncodeError, LookupError, AttributeError, OSError):
+        return False
+    return True
+
+
+def path_is_short_enough():
+    return os.name != "nt" or len(str(ROOT)) < MAX_WINDOWS_PATH
 
 
 def display(command):
@@ -139,7 +168,15 @@ def download_file(url, destination):
 def bootstrap_uv():
     print("Setting up the installer. This runs once and stays in the project folder.")
     name = uv_artifact_name()
-    archive = Path(tempfile.gettempdir()) / name
+    workspace = Path(tempfile.mkdtemp(prefix="sinex-uv-"))
+    archive = workspace / name
+    try:
+        return fetch_uv(name, archive)
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def fetch_uv(name, archive):
     for source in UV_SOURCES:
         try:
             download_file(source + name, archive)
@@ -173,8 +210,6 @@ def bootstrap_uv():
     except (OSError, tarfile.TarError, zipfile.BadZipFile) as error:
         print("The installer could not be unpacked: " + str(error))
         return None
-    finally:
-        archive.unlink(missing_ok=True)
     return find_uv()
 
 
@@ -254,6 +289,11 @@ def verify_install(python):
     print("The last lines of the error were:")
     for line in result.stderr.strip().splitlines()[-8:]:
         print("  " + line)
+    if os.name != "nt" and MISSING_LIBRARY in result.stderr:
+        print()
+        print("A system library is missing. On Debian and Ubuntu, install it with:")
+        print("  sudo apt install " + LINUX_PACKAGES)
+        print("Other distributions carry the same libraries under their own names.")
     return False
 
 
@@ -306,10 +346,6 @@ def plan(reinstall):
     return 0
 
 
-def same_interpreter():
-    return os.path.abspath(sys.executable) == os.path.abspath(str(venv_python()))
-
-
 def relaunch():
     env = os.environ.copy()
     env[MARKER] = "1"
@@ -318,7 +354,16 @@ def relaunch():
         if not python.is_file():
             python = venv_python()
         try:
-            subprocess.Popen([str(python), str(MAIN)], cwd=str(ROOT), env=env)
+            subprocess.Popen(
+                [str(python), str(MAIN)],
+                cwd=str(ROOT),
+                env=env,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
         except OSError as error:
             print("The application could not start: " + str(error))
             return 1
@@ -351,11 +396,21 @@ def prepare(argv):
         found = ".".join(str(part) for part in sys.version_info[:3])
         print("This Python is " + found + ". SINEX TRF Studio needs " + wanted + " or later.")
         print("On Windows, run run_windows.bat instead. It sets up Python for you.")
-        return 1
+        return EXPLAINED
 
     if not REQUIREMENTS.is_file() or not MAIN.is_file() or not PACKAGE_DIR.is_dir():
         print("Run main.py from the project folder. main.py or requirements.txt is missing.")
-        return 1
+        return EXPLAINED
+
+    if not path_is_short_enough():
+        print("The folder path is too long.")
+        print("Move the folder closer to the drive root, then start it again.")
+        return EXPLAINED
+
+    if not path_is_supported():
+        print("The folder path contains characters this system does not support.")
+        print("Move the folder to a path with plain English characters, then start it again.")
+        return EXPLAINED
 
     if reinstall or not environment_ready():
         uv = find_uv()
@@ -366,7 +421,7 @@ def prepare(argv):
         if not install_environment(uv, reinstall):
             return 1
 
-    if os.environ.get(MARKER) or same_interpreter():
+    if os.environ.get(MARKER):
         return None
 
     return relaunch()

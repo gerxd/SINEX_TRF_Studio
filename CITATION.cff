@@ -3,7 +3,7 @@ message: "If you make use of this software, please cite it using the metadata be
 title: "SINEX TRF Studio"
 version: 1.1.2
 license: GPL-3.0-only
-date-released: 2026-09-19
+date-released: 2026-09-22
 identifiers:
   - type: doi
     value: "10.5281/zenodo.22548394"
