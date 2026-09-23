@@ -11,8 +11,8 @@ if (-not (Test-Path $pythonExe)) {
     exit 1
 }
 
-$resourcesDir = [System.IO.Path]::Combine($venvDir, "Lib", "site-packages", "PyQt5", "Qt5", "resources")
-$translationsDir = [System.IO.Path]::Combine($venvDir, "Lib", "site-packages", "PyQt5", "Qt5", "translations")
+$resourcesDir = [System.IO.Path]::Combine($venvDir, "Lib", "site-packages", "PyQt6", "Qt6", "resources")
+$translationsDir = [System.IO.Path]::Combine($venvDir, "Lib", "site-packages", "PyQt6", "Qt6", "translations")
 
 if (-not (Test-Path $resourcesDir)) {
     Write-Error "Qt resources directory not found at $resourcesDir"
@@ -48,8 +48,7 @@ $arguments = @(
     "-m", "nuitka",
     "--standalone",
     "--onefile",
-    "--enable-plugin=pyqt5",
-    "--mingw64",
+    "--enable-plugin=pyqt6",
     "--assume-yes-for-downloads",
     "--windows-console-mode=disable",
     "--windows-icon-from-ico=sinex_parser/ui/icon.ico",
@@ -58,8 +57,8 @@ $arguments = @(
     "--include-data-file=sinex_parser/icon.png=sinex_parser/icon.png",
     "--include-data-file=sinex_parser/ui/icon.png=sinex_parser/ui/icon.png",
     "--include-data-dir=sinex_parser/ui/map_assets=sinex_parser/ui/map_assets",
-    "--include-data-dir=$resourcesArg=PyQt5/Qt5/resources",
-    "--include-data-dir=$translationsArg=PyQt5/Qt5/translations",
+    "--include-data-dir=$resourcesArg=PyQt6/Qt6/resources",
+    "--include-data-dir=$translationsArg=PyQt6/Qt6/translations",
     '--output-filename="SINEX TRF Studio.exe"',
     "--windows-product-name=SINEX TRF Studio",
     "--windows-product-version=$appVersion",

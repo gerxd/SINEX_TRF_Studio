@@ -1,9 +1,9 @@
 cff-version: 1.2.0
 message: "If you make use of this software, please cite it using the metadata below"
 title: "SINEX TRF Studio"
-version: 1.1.2
+version: 1.2.0
 license: GPL-3.0-only
-date-released: 2026-09-22
+date-released: 2026-09-24
 identifiers:
   - type: doi
     value: "10.5281/zenodo.22548394"
@@ -18,7 +18,7 @@ authors:
     orcid: "https://orcid.org/0000-0002-0182-5093"
     affiliation: International Hellenic University
 abstract: >
-  SINEX TRF Studio is a PyQt5 desktop application for ingesting, analyzing, and
+  SINEX TRF Studio is a PyQt6 desktop application for ingesting, analyzing, and
   visualizing geodetic SINEX (Solution Independent Exchange) files. It parses
   block-structured SINEX content and provides matrix visualization, station
   mapping, normal-equation recovery, datum analysis, and multi-format export.

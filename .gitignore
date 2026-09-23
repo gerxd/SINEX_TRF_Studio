@@ -27,3 +27,13 @@ SINEX TRF Studio.exe
 # Misc OS files
 Thumbs.db
 .vscode/settings.json
+
+# Test artifacts
+.pytest_cache/
+probe_*.json
+
+# Local SINEX corpus, 4.1 GB, kept outside version control
+SINEX Test Files/
+
+# The one comparison export above 1 MB
+SINEX_TRF_STUDIO_COMPARISON_EXPORTS/v1.0/ITRF2020-u2023-IDS-TRF_SOLUTION_MATRIX_ESTIMATE L COVA.xlsx

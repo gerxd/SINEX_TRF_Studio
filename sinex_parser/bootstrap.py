@@ -267,7 +267,7 @@ def create_environment_commands(uv, reinstall):
 
 def verify_install(python):
     probe = (
-        "import sinex_parser, PyQt5.QtWidgets, PyQt5.QtWebEngineWidgets, "
+        "import sinex_parser, PyQt6.QtWidgets, PyQt6.QtWebEngineWidgets, "
         "numpy, pandas, matplotlib, seaborn, pyqtgraph, folium, openpyxl, plyer; "
         "print('SINEX TRF Studio', sinex_parser.__version__)"
     )

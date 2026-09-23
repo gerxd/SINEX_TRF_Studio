@@ -1,29 +1,31 @@
 # ui/main_window.py
 import os
 
-from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import (
+from PyQt6.QtGui import QFont, QAction, QActionGroup
+from PyQt6.QtWidgets import (
     QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
     QLabel, QPushButton, QProgressBar, QTabWidget,
-    QMessageBox, QFileDialog, QComboBox, QPlainTextEdit, QCheckBox, QApplication, QSizePolicy
+    QMessageBox, QFileDialog, QComboBox, QPlainTextEdit, QCheckBox, QApplication, QSizePolicy,
+    QSplitter, QMenu
 )
-from PyQt5.QtCore import QUrl, pyqtSignal
+from PyQt6.QtCore import QUrl, pyqtSignal
 import numpy as np
 from pathlib import Path
 from plyer import notification
 
-from PyQt5 import QtGui, QtCore
+from PyQt6 import QtGui, QtCore
 
 from .. import __version__
 from ..core import (
     logger, SinexFileValidator, benchmark,
     remember_dialog_dir, default_save_path, ensure_suffix,
+    get_app_setting, set_app_setting,
 )
 
 from ..parsers import create_parsers
 from ..ui.widgets import (
     ParserWorker, CovarianceMatrixWidget, StationsWidget,
-    InfoWidget, DatumWidget, FileInfoWidget
+    InfoWidget, DatumWidget, FileInfoWidget, QPlainTextEditLogger
 )
 
 
@@ -38,6 +40,10 @@ class SINEXParserApp(QMainWindow):
         self.custom_variance_factor = None
         self._parse_generation = 0
         self._active_workers = set()
+        self._theme = get_app_setting('ui/theme', 'light') or 'light'
+        self._log_visible = get_app_setting('ui/log_visible', True) not in (False, 'false')
+        self._remember_geometry = get_app_setting('ui/remember_geometry', False) in (True, 'true')
+        self._apply_theme(self._theme)
         self.init_ui()
         self.benchmark_updated.connect(self._refresh_benchmark_button)
         benchmark.on_update = self.benchmark_updated.emit
@@ -52,16 +58,17 @@ class SINEXParserApp(QMainWindow):
         self.setGeometry(
             screen.x() + 50,
             screen.y() + 50,
-            int(screen.width() * 0.9),
-            int(screen.height() * 0.9)
+            min(1600, int(screen.width() * 0.85)),
+            min(1000, int(screen.height() * 0.9))
         )
+        self._build_settings_menu()
 
         main_layout = QVBoxLayout()
         icon_path = "sinex_parser/ui/icon.ico"
         self.setWindowIcon(QtGui.QIcon(icon_path))
 
         top_container = QWidget()
-        top_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        top_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         top_layout = QHBoxLayout(top_container)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(16)
@@ -75,7 +82,7 @@ class SINEXParserApp(QMainWindow):
         left_panel.addWidget(self.file_label)
 
         self.file_info_widget = FileInfoWidget(self)
-        self.file_info_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.file_info_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.file_info_widget.setMaximumHeight(220)
         left_panel.addWidget(self.file_info_widget, stretch=1)
 
@@ -87,11 +94,24 @@ class SINEXParserApp(QMainWindow):
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(8)
 
+        file_row = QHBoxLayout()
+        file_row.setContentsMargins(0, 0, 0, 0)
+        file_row.setSpacing(8)
+
         self.select_file_button = QPushButton("Select SINEX File")
         self.select_file_button.setFont(QFont('Arial', 16))
         self.select_file_button.setFixedSize(500, 60)
         self.select_file_button.clicked.connect(self.select_sinex_file)
-        controls_layout.addWidget(self.select_file_button)
+        file_row.addWidget(self.select_file_button)
+
+        self.settings_button = QPushButton("⚙")
+        self.settings_button.setFont(QFont('Arial', 16))
+        self.settings_button.setFixedSize(60, 60)
+        self.settings_button.setToolTip("Settings")
+        self.settings_button.clicked.connect(self._show_settings_menu)
+        file_row.addWidget(self.settings_button)
+
+        controls_layout.addLayout(file_row)
 
         self.benchmark_checkbox = QCheckBox("Record benchmark")
         self.benchmark_checkbox.setChecked(False)
@@ -115,7 +135,7 @@ class SINEXParserApp(QMainWindow):
             "When enabled, the parser skips the block-structure validation pass\n"
             "before parsing. Saves time on large files from trusted sources."
         )
-        self.skip_validation.setCursor(QtGui.QCursor(QtCore.Qt.WhatsThisCursor))
+        self.skip_validation.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.WhatsThisCursor))
         controls_layout.addWidget(self.skip_validation)
 
         self.skip_epoch = QCheckBox("Skip parsing SOLUTION/EPOCHS")
@@ -124,14 +144,14 @@ class SINEXParserApp(QMainWindow):
             "When enabled, the parser will ignore the SOLUTION/EPOCHS block\n"
             "to speed up parsing for very large files."
         )
-        self.skip_epoch.setCursor(QtGui.QCursor(QtCore.Qt.WhatsThisCursor))
+        self.skip_epoch.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.WhatsThisCursor))
 
         controls_layout.addWidget(self.skip_epoch)
         controls_layout.addStretch()
 
         controls_widget = QWidget()
         controls_widget.setLayout(controls_layout)
-        controls_widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        controls_widget.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         top_layout.addWidget(controls_widget, stretch=0)
 
         top_container.setMaximumHeight(top_container.sizeHint().height())
@@ -215,10 +235,96 @@ class SINEXParserApp(QMainWindow):
         self.tab_widget.addTab(self.info_widget, "Info")
 
         main_layout.addWidget(self.tab_widget)
+        self._apply_log_visibility()
+        self._copy_app_palette()
 
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
+
+        if self._remember_geometry:
+            saved = get_app_setting('window/geometry')
+            if saved is not None:
+                self.restoreGeometry(saved)
+
+    def _show_settings_menu(self):
+        corner = self.settings_button.rect().bottomLeft()
+        self._settings_menu.exec(self.settings_button.mapToGlobal(corner))
+
+    def _build_settings_menu(self):
+        settings_menu = QMenu(self)
+        self._settings_menu = settings_menu
+
+        theme_menu = settings_menu.addMenu('Theme')
+        self._theme_group = QActionGroup(self)
+        self._theme_group.setExclusive(True)
+        for label, name in (('Light', 'light'), ('Dark', 'dark'), ('Follow system', 'system')):
+            act = QAction(label, self, checkable=True)
+            act.setData(name)
+            act.setChecked(name == self._theme)
+            act.triggered.connect(lambda _checked, n=name: self._apply_theme(n, store=True))
+            self._theme_group.addAction(act)
+            theme_menu.addAction(act)
+
+        settings_menu.addSeparator()
+
+        self._log_action = QAction('Show log panel', self, checkable=True)
+        self._log_action.setChecked(self._log_visible)
+        self._log_action.triggered.connect(self._toggle_log_panel)
+        settings_menu.addAction(self._log_action)
+
+        self._geometry_action = QAction('Remember window size', self, checkable=True)
+        self._geometry_action.setChecked(self._remember_geometry)
+        self._geometry_action.triggered.connect(self._toggle_remember_geometry)
+        settings_menu.addAction(self._geometry_action)
+
+    def _apply_theme(self, name: str, store: bool = False):
+        scheme = {
+            'light': QtCore.Qt.ColorScheme.Light,
+            'dark': QtCore.Qt.ColorScheme.Dark,
+        }.get(name, QtCore.Qt.ColorScheme.Unknown)
+        app = QApplication.instance()
+        hints = app.styleHints()
+        if not getattr(self, '_scheme_hooked', False):
+            hints.colorSchemeChanged.connect(self._refresh_palettes)
+            self._scheme_hooked = True
+        hints.setColorScheme(scheme)
+        self._theme = name
+        if store:
+            set_app_setting('ui/theme', name)
+
+    def _apply_log_visibility(self):
+        for widget in (self.covariance_widget, self.datum_widget):
+            container = getattr(widget, 'log_container', None)
+            if container is not None:
+                container.setVisible(self._log_visible)
+
+    def _refresh_palettes(self, *_):
+        QtCore.QTimer.singleShot(0, self._copy_app_palette)
+
+    def _copy_app_palette(self):
+        app = QApplication.instance()
+        palette = app.palette()
+        for widget in app.allWidgets():
+            widget.setPalette(palette)
+        app.setStyleSheet(
+            'QSplitter::handle {background: palette(mid);} '
+            'QPlainTextEdit, QTextEdit {background: palette(base); color: palette(text);} '
+        )
+
+    def _toggle_log_panel(self, checked: bool):
+        self._log_visible = bool(checked)
+        self._apply_log_visibility()
+        set_app_setting('ui/log_visible', self._log_visible)
+
+    def _toggle_remember_geometry(self, checked: bool):
+        self._remember_geometry = bool(checked)
+        set_app_setting('ui/remember_geometry', self._remember_geometry)
+
+    def closeEvent(self, event):
+        if self._remember_geometry:
+            set_app_setting('window/geometry', self.saveGeometry())
+        super().closeEvent(event)
 
     def _set_benchmark_enabled(self, enabled: bool) -> None:
         benchmark.set_enabled(bool(enabled))

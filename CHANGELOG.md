@@ -1,4 +1,32 @@
-# Patch Notes
+# Changelog
+
+## 1.2.0
+
+Bug fixes:
+- Export filenames match the filter thresholds used in the computation, even if the thresholds change afterward
+- Text exports carry full float64 precision instead of 13 significant digits
+- The normal matrix, apriori covariance, u vector and raw block .xlsx exports are no longer limited to 13 significant digits
+- Opening the filter options with no file loaded says that no file is loaded and disables the manual option
+- The filtering status updates when the filter dialog is accepted
+
+New features:
+- Settings menu, next to Select SINEX File, with theme, a log panel toggle, and remember window size, all kept between runs
+- Dark theme for the interface
+- Filter options and manual episode selection are in one window, with a radio pair to choose between them
+- A filtering status line under the datum controls shows the thresholds the last computation used
+
+Changes:
+- The application is built on PyQt6. Requirements and the standalone build script are updated
+- The covariance and datum tabs each have a log panel, and the datum text output moved into it
+- The covariance buttons and the visualizer share one column, and the datum controls sit in a sidebar of the same width
+- The default window is 1600 by 1000
+- The stations map fills the remaining space
+- Plot Matrix is next to Export Statistics Report
+- The Nuitka build script no longer passes --mingw64, which Nuitka rejects on Python 3.13 and later
+
+Known limitations:
+- The dark theme covers the interface widgets only. The station map, the matplotlib figures and the pyqtgraph plots stay light
+- .xlsx carries 16 significant digits, so a value that needs 17 loses about 1e-16 relative. Use .npy for exact values
 
 ## 1.1.2
 

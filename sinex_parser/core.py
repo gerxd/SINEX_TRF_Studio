@@ -235,10 +235,23 @@ _last_dialog_dir = None
 
 def _settings():
     try:
-        from PyQt5.QtCore import QSettings
+        from PyQt6.QtCore import QSettings
     except ImportError:
         return None
     return QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+
+
+def get_app_setting(key: str, default=None):
+    store = _settings()
+    if store is None:
+        return default
+    return store.value(key, default)
+
+
+def set_app_setting(key: str, value) -> None:
+    store = _settings()
+    if store is not None:
+        store.setValue(key, value)
 
 
 def get_dialog_dir() -> str:

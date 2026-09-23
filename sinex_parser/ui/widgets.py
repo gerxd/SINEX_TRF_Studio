@@ -8,26 +8,27 @@ import pandas as pd
 import logging
 import html
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Tuple
+from typing import Dict, List, NamedTuple, Optional, Any, Callable, Tuple
 
-from PyQt5.QtGui import QFont, QPixmap, QImage, QColor
-from PyQt5.QtWidgets import (
+from PyQt6.QtGui import QFont, QPixmap, QImage, QColor
+from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QMessageBox, QComboBox, QFrame, QSplitter,
     QTextEdit, QPlainTextEdit, QListWidget, QListWidgetItem, QTableView,
     QDialog, QSpacerItem, QGridLayout, QStackedLayout, QApplication,
     QCheckBox, QDoubleSpinBox, QRadioButton, QScrollArea, QLineEdit,
-    QSizePolicy
+    QSizePolicy, QGroupBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QUrl, QStandardPaths
-from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage, QWebEngineSettings
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QStandardPaths
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 import pyqtgraph as pg
 import matplotlib
 from matplotlib import cm, colors as mcolors
 from matplotlib.patches import Patch
 from pyqtgraph.exporters import ImageExporter
 pg.setConfigOptions(imageAxisOrder="row-major", useOpenGL=True, antialias=False)
-matplotlib.use("Qt5Agg")  # ensure Qt5 backend
+matplotlib.use("QtAgg")  # ensure Qt5 backend
 import matplotlib.pyplot as plt
 import seaborn as sns
 import folium
@@ -42,6 +43,10 @@ from ..core import (
     logger, benchmark, remember_dialog_dir, default_save_path, ensure_suffix,
 )
 from ..parsers import SinexBlockParser, MatrixEstimateParser
+
+
+CONTROL_COLUMN_WIDTH = 470
+CONTROL_COLUMN_MIN = 400
 
 
 class StationsMapPage(QWebEnginePage):
@@ -214,13 +219,40 @@ class QPlainTextEditLogger(logging.Handler):
         w = self.text_widget
         if w is None:
             return
-        from PyQt5.QtCore import QTimer
+        from PyQt6.QtCore import QTimer
         def _append():
             try:
                 w.appendPlainText(msg)
             except Exception:
                 pass
         QTimer.singleShot(0, _append)
+
+def make_section_header(title: str, layout):
+    label = QLabel(title)
+    label.setStyleSheet("font-size: 15px; font-weight: bold;")
+    layout.addWidget(label)
+    rule = QFrame()
+    rule.setFrameShape(QFrame.Shape.HLine)
+    rule.setFrameShadow(QFrame.Shadow.Sunken)
+    layout.addWidget(rule)
+
+
+def make_log_panel(parent=None):
+    container = QWidget(parent)
+    panel_layout = QVBoxLayout(container)
+    panel_layout.setContentsMargins(0, 0, 0, 0)
+    label = QLabel("Log:")
+    label.setStyleSheet("font-size: 15px; font-weight: bold;")
+    panel_layout.addWidget(label)
+    text = QPlainTextEdit()
+    text.setReadOnly(True)
+    text_font = text.font()
+    text_font.setPointSize(12)
+    text.setFont(text_font)
+    panel_layout.addWidget(text)
+    logger.addHandler(QPlainTextEditLogger(text))
+    return container, text
+
 
 ###############################################################################
 #Visualization Widget
@@ -246,9 +278,9 @@ class MatrixVisualizerWidget(QWidget):
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         self.setStyleSheet(
-            "QPushButton {color: black; font-size: 16px;} "
-            "QComboBox {color: black; font-size: 16px;} "
-            "QLabel {color: black; font-size: 16px;}"
+            "QPushButton {font-size: 14px;} "
+            "QComboBox {font-size: 14px;} "
+            "QLabel {font-size: 14px;}"
         )
 
         header_label = QLabel("Visualizer:")
@@ -259,10 +291,10 @@ class MatrixVisualizerWidget(QWidget):
         layout.addWidget(header_label)
 
         self.info_label = QLabel("Load a SINEX file to enable plotting.")
-        self.info_label.setAlignment(Qt.AlignCenter)
+        self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.info_label.setWordWrap(True)
         self.info_label.setMinimumWidth(0)
-        self.info_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.info_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         layout.addSpacing(6)
         layout.addWidget(self.info_label)
 
@@ -272,7 +304,7 @@ class MatrixVisualizerWidget(QWidget):
         matrix_row.addWidget(QLabel("Matrix to Plot:"))
         self.matrix_combo = QComboBox()
         self.matrix_combo.setMinimumContentsLength(24)
-        self.matrix_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.matrix_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.matrix_combo.setMinimumWidth(320)
         matrix_row.addWidget(self.matrix_combo)
         matrix_row.addStretch()
@@ -316,7 +348,7 @@ class MatrixVisualizerWidget(QWidget):
         sections_layout = QVBoxLayout()
 
         mpl_frame = QFrame()
-        mpl_frame.setFrameShape(QFrame.StyledPanel)
+        mpl_frame.setFrameShape(QFrame.Shape.StyledPanel)
         mpl_layout = QVBoxLayout(mpl_frame)
         mpl_header_row = QHBoxLayout()
         mpl_title = QLabel("Matplotlib")
@@ -330,7 +362,7 @@ class MatrixVisualizerWidget(QWidget):
         sections_layout.addWidget(mpl_frame)
 
         pg_frame = QFrame()
-        pg_frame.setFrameShape(QFrame.StyledPanel)
+        pg_frame.setFrameShape(QFrame.Shape.StyledPanel)
         pg_layout = QVBoxLayout(pg_frame)
         pg_header_row = QHBoxLayout()
         pg_title = QLabel("PyQtGraph")
@@ -342,7 +374,7 @@ class MatrixVisualizerWidget(QWidget):
         pg_layout.addLayout(pg_header_row)
 
         pg_note = QLabel("use for very large matrices")
-        pg_note.setStyleSheet("color: #555555; font-size: 12px;")
+        pg_note.setStyleSheet("font-size: 12px;")
         pg_layout.addWidget(pg_note)
 
         pg_controls_row = QHBoxLayout()
@@ -472,8 +504,8 @@ class MatrixVisualizerWidget(QWidget):
             reply = QMessageBox.question(self, 'Large Matrix Warning',
                                          f"The selected matrix is very large ({data.shape}).\n"
                                          "Plot generation may be slow. Continue?",
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.No:
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.No:
                 return
 
         self.info_label.setText(f"Generating '{plot_type}' for '{selected_key}'...")
@@ -786,10 +818,10 @@ class MatrixVisualizerWidget(QWidget):
                 "Proceed with export?\n\n"
                 "Large matrices may take some time to export."
             ),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
 
 
@@ -888,7 +920,7 @@ class MatrixVisualizerWidget(QWidget):
         
         finally:
             if 'original_text' in locals():
-                from PyQt5.QtCore import QTimer
+                from PyQt6.QtCore import QTimer
                 QTimer.singleShot(3000, lambda: self.info_label.setText(original_text))
 
 class StationsWidget(QWidget):
@@ -905,10 +937,10 @@ class StationsWidget(QWidget):
     def _setup_ui(self):
         layout = QVBoxLayout()
         upper_layout = QHBoxLayout()
-        self.splitter = QSplitter(Qt.Horizontal, self)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.station_list = QListWidget()
         self.info_panel = QWidget()
-        self.info_panel.setMaximumWidth(300)
+        self.info_panel.setMaximumWidth(240)
         self.init_info_panel()
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self.update_station_map)
@@ -932,10 +964,11 @@ class StationsWidget(QWidget):
         self.splitter.addWidget(self.station_list)
         self.splitter.addWidget(self.info_panel)
         self.splitter.addWidget(self.map_view)
-        self.splitter.setSizes([150, 300, 550])
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setStretchFactor(2, 4)
+        self.map_view.setMinimumWidth(420)
+        self.splitter.setSizes([100, 200, 1200])
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setStretchFactor(2, 1)
         upper_layout.addWidget(self.refresh_button)
         upper_layout.addLayout(vis_layout)
         layout.addLayout(upper_layout)
@@ -985,7 +1018,7 @@ class StationsWidget(QWidget):
 
     def _configure_map_view(self):
         temp_root = Path(
-            QStandardPaths.writableLocation(QStandardPaths.TempLocation)
+            QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)
             or tempfile.gettempdir()
         )
         self._map_html_dir = temp_root / "sinex_studio_offline_folium_map"
@@ -1002,10 +1035,10 @@ class StationsWidget(QWidget):
         self.map_page = StationsMapPage(self.map_view)
         self.map_view.setPage(self.map_page)
         self.map_view.settings().setAttribute(
-            QWebEngineSettings.LocalContentCanAccessFileUrls, True
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True
         )
         self.map_view.settings().setAttribute(
-            QWebEngineSettings.LocalContentCanAccessRemoteUrls, False
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False
         )
         self.map_view.loadFinished.connect(self._on_map_load_finished)
 
@@ -1224,7 +1257,7 @@ class StationsWidget(QWidget):
         self.map_view.load(QUrl.fromLocalFile(str(map_html_path)))
 
     def _set_current_station_item(self, station_code: str):
-        matches = self.station_list.findItems(station_code, Qt.MatchExactly)
+        matches = self.station_list.findItems(station_code, Qt.MatchFlag.MatchExactly)
         if matches:
             self.station_list.setCurrentItem(matches[0])
 
@@ -1271,10 +1304,12 @@ class StationsWidget(QWidget):
 #OperationsWidget
 ###############################################################################
 class OperationsWidget(QWidget):
-    def __init__(self, parent=None, get_current_matrix_func=None, export_func=None):
+    def __init__(self, parent=None, get_current_matrix_func=None, export_func=None,
+                 log_widget=None):
         super().__init__(parent)
         self.get_current_matrix_func = get_current_matrix_func
         self.export_func = export_func
+        self._shared_log = log_widget
 
         self._normal_matrix = None
         self._apriori_matrix = None
@@ -1285,10 +1320,11 @@ class OperationsWidget(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        self.setStyleSheet("QPushButton {color: black; font-size: 16px;} QComboBox {color: black; font-size: 16px;} QLabel {color: black; font-size: 16px;}")
+        self.setStyleSheet("QPushButton {font-size: 14px;} QComboBox {font-size: 14px;} QLabel {font-size: 14px;}")
 
-        button_layout = QHBoxLayout()
-        
+        button_layout = QVBoxLayout()
+        make_section_header("Covariance Operations", button_layout)
+
         self.compute_normal_btn = QPushButton("Compute Normal Matrix")
         self.compute_normal_btn.setToolTip(
             "N = Qₓ⁻¹ (no apriori) or N = Qₓ⁻¹ − C₀⁻¹ (with apriori), where Qₓ = Cₓ/σ₀²."
@@ -1323,20 +1359,24 @@ class OperationsWidget(QWidget):
         layout.addLayout(button_layout)
 
         # Log 
-        self.log_label = QLabel("Log:")
-        self.log_label.setFont(QFont("Arial", 14))
-        layout.addWidget(self.log_label)
-        
-        self.log_text = QPlainTextEdit()
-        self.log_text.setReadOnly(True)
-        cur_font = self.log_text.font()
-        cur_font.setPointSize(14)
-        self.log_text.setFont(cur_font)
-        layout.addWidget(self.log_text)
+        if self._shared_log is not None:
+            self.log_text = self._shared_log
+            layout.addStretch(1)
+        else:
+            self.log_label = QLabel("Log:")
+            self.log_label.setFont(QFont("Arial", 14))
+            layout.addWidget(self.log_label)
 
-        self.log_handler = QPlainTextEditLogger(self.log_text)
-        if self.log_handler not in logger.handlers:
-            logger.addHandler(self.log_handler)
+            self.log_text = QPlainTextEdit()
+            self.log_text.setReadOnly(True)
+            cur_font = self.log_text.font()
+            cur_font.setPointSize(14)
+            self.log_text.setFont(cur_font)
+            layout.addWidget(self.log_text)
+
+            self.log_handler = QPlainTextEditLogger(self.log_text)
+            if self.log_handler not in logger.handlers:
+                logger.addHandler(self.log_handler)
 
         self.matrix_combo = QComboBox()
         self.matrix_combo.addItems([
@@ -1383,14 +1423,14 @@ class OperationsWidget(QWidget):
                 f"parameters this is expected to take the order of "
                 f"{minutes:.0f} minutes, during which the window will not "
                 f"respond.{chr(10)}{chr(10)}Proceed?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
             )
-            if answer != QMessageBox.Yes:
+            if answer != QMessageBox.StandardButton.Yes:
                 return
         self.log_text.appendPlainText(
             f"Computing rank of a {N.shape[0]}x{N.shape[0]} matrix by SVD, this may take a while."
         )
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             t0 = time.time()
             with benchmark.span('rank of N (SVD)'):
@@ -1638,21 +1678,32 @@ class OperationsWidget(QWidget):
 
 class CovarianceMatrixWidget(QWidget):
 #wrapper for operations + mvw
-    def __init__(self, parent=None, get_current_matrix_func=None, export_func=None):
+    def __init__(self, parent=None, get_current_matrix_func=None, export_func=None,
+                 log_widget=None):
         super().__init__(parent)
+        self.log_container, self.log_text = make_log_panel(self)
         self.operations_widget = OperationsWidget(
+            log_widget=self.log_text,
             parent=self,
             get_current_matrix_func=get_current_matrix_func,
             export_func=export_func,
         )
         self.visualizer_widget = MatrixVisualizerWidget(parent=self)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.operations_widget)
-        splitter.addWidget(self.visualizer_widget)
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([1100, 450])
+        right_column = QSplitter(Qt.Orientation.Vertical)
+        right_column.addWidget(self.operations_widget)
+        right_column.addWidget(self.visualizer_widget)
+        right_column.setStretchFactor(0, 0)
+        right_column.setStretchFactor(1, 1)
+        right_column.setSizes([300, 460])
+        right_column.setFixedWidth(CONTROL_COLUMN_WIDTH)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self.log_container)
+        splitter.addWidget(right_column)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setSizes([900, CONTROL_COLUMN_WIDTH])
         layout = QVBoxLayout(self)
         layout.addWidget(splitter)
         self.setLayout(layout)
@@ -1665,8 +1716,8 @@ class CovarianceMatrixWidget(QWidget):
 ###############################################################################
 class InfoWidget(QWidget):
     DEPENDENCIES: Tuple[str, ...] = (
-        "PyQt5>=5.15.0",
-        "PyQtWebEngine>=5.15.0",
+        "PyQt6>=6.5.0",
+        "PyQt6-WebEngine>=6.5.0",
         "pyqtgraph>=0.13.0",
         "numpy>=1.19.0",
         "pandas>=1.1.0",
@@ -1690,10 +1741,10 @@ class InfoWidget(QWidget):
         header_layout.setSpacing(24)
 
         self.logo_label = QLabel()
-        self.logo_label.setAlignment(Qt.AlignCenter)
+        self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.logo_label.setMinimumSize(160, 160)
         self.logo_label.setStyleSheet(
-            "QLabel {background-color: #ffffff; border: 1px solid #dcdcdc; padding: 12px;}"
+            "QLabel {background: palette(base); border: 1px solid palette(mid); padding: 12px;}"
         )
 
         logo_path = Path(__file__).resolve().parents[2] / "logo2.jpg"
@@ -1702,10 +1753,10 @@ class InfoWidget(QWidget):
             self.logo_label.setText("SINEX Studio")
         else:
             self.logo_label.setPixmap(
-                pixmap.scaled(180, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pixmap.scaled(180, 180, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             )
 
-        header_layout.addWidget(self.logo_label, 0, Qt.AlignTop)
+        header_layout.addWidget(self.logo_label, 0, Qt.AlignmentFlag.AlignTop)
         details_layout = QVBoxLayout()
         details_layout.setSpacing(6)
         title_label = QLabel("SINEX TRF Studio")
@@ -1730,7 +1781,7 @@ class InfoWidget(QWidget):
             "Gerasimos M. Dossas\n @ gerasimos.dossas@gmail.com"
         )
         contact_body.setWordWrap(True)
-        contact_body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        contact_body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         details_layout.addWidget(title_label)
         details_layout.addWidget(subtitle_label)
@@ -1749,13 +1800,13 @@ class InfoWidget(QWidget):
             "Results are provided as-is; validate numerical outputs before critical use."
         )
         note_label.setWordWrap(True)
-        note_label.setStyleSheet("color: #555555;")
+        note_label.setStyleSheet("")
         layout.addWidget(note_label)
 
         requirements_widget = QTextEdit()
         requirements_widget.setReadOnly(True)
         requirements_widget.setStyleSheet(
-            "QTextEdit {background-color: #ffffff; border: 1px solid #dcdcdc; padding: 8px;}"
+            "QTextEdit {background: palette(base); border: 1px solid palette(mid); padding: 8px;}"
         )
 
         requirements_html = ["<h3>Dependencies</h3><ul>"]
@@ -1768,13 +1819,13 @@ class InfoWidget(QWidget):
         overview_widget = QTextEdit()
         overview_widget.setReadOnly(True)
         overview_widget.setStyleSheet(
-            "QTextEdit {background-color: #ffffff; border: 1px dashed #b0b0b0; padding: 12px;}"
+            "QTextEdit {background: palette(base); border: 1px dashed palette(mid); padding: 12px;}"
         )
         overview_widget.document().setDefaultStyleSheet(
-            "body { color: #222222; font-size: 13px; }"
+            "body { font-size: 13px; }"
             "h3 { margin: 0 0 10px 0; font-size: 16px; font-weight: 600; }"
-            "h4 { margin: 14px 0 6px 0; font-size: 13px; font-weight: 600; color: #3a3a3a; }"
-            "p { margin: 0 0 10px 0; color: #5a5a5a; }"
+            "h4 { margin: 14px 0 6px 0; font-size: 13px; font-weight: 600; }"
+            "p { margin: 0 0 10px 0; }"
             "ul { margin: 0 0 0 18px; }"
             "li { margin-bottom: 5px; }"
         )
@@ -1810,6 +1861,14 @@ class InfoWidget(QWidget):
         layout.addLayout(bottom_layout, 1)
 
 
+class AppliedFilter(NamedTuple):
+    enabled: bool
+    pos_threshold_m: float
+    vel_threshold_m_per_y: float
+    manual_enabled: bool
+    manual_episodes: frozenset
+
+
 class DatumWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1824,6 +1883,10 @@ class DatumWidget(QWidget):
         self.filtered_row_idx = None
         self._manual_filter_enabled = False  #Manual episode selection mode
         self._manual_selected_episodes = set()  #episodes to INCLUDE
+        self._applied_filter = None
+        self._filter_enabled = True
+        self._pos_threshold_m = 0.050
+        self._vel_threshold_m_per_y = 0.003
         self._setup_ui()
         self._filtered_episodes_info = []  # list of dicts with details
         self._filtered_dialog = None  # dialog instance
@@ -1835,11 +1898,37 @@ class DatumWidget(QWidget):
         self._legend_sigma_minor_div = 2
 
 
-        layout = QVBoxLayout(self)
+        outer_layout = QHBoxLayout(self)
         self.setStyleSheet(
-            "QPushButton {color: black; font-size: 16px;} QComboBox {color: black; font-size: 16px;} QLabel {color: black; font-size: 16px;}")
+            "QPushButton {font-size: 14px;} QComboBox {font-size: 14px;} QLabel {font-size: 14px;}")
 
-        buttons_layout = QHBoxLayout()
+        self.log_container, self.log_text = make_log_panel(self)
+        outer_layout.addWidget(self.log_container, 1)
+
+        sidebar = QWidget()
+        sidebar.setFixedWidth(CONTROL_COLUMN_WIDTH)
+        layout = QVBoxLayout(sidebar)
+        outer_layout.addWidget(sidebar, 0)
+
+        buttons_layout = QVBoxLayout()
+
+        make_section_header("Filtering", buttons_layout)
+
+        self.filter_options_btn = QPushButton("Filter Options")
+        self.filter_options_btn.setToolTip("Set the auto sigma thresholds or pick episodes by hand")
+        self.filter_options_btn.clicked.connect(self.open_filter_options_dialog)
+        buttons_layout.addWidget(self.filter_options_btn)
+
+        self.show_filtered_btn = QPushButton("Show Filtered Stations")
+        self.show_filtered_btn.setToolTip("List episodes removed by current filtering")
+        self.show_filtered_btn.setEnabled(False)
+        self.show_filtered_btn.clicked.connect(self.open_filtered_episodes_dialog)
+        buttons_layout.addWidget(self.show_filtered_btn)
+
+        self.filter_status_label = QLabel()
+        buttons_layout.addWidget(self.filter_status_label)
+
+        make_section_header("Datum Effect", buttons_layout)
 
         self.sigma_theta_btn = QPushButton("Calculate SigmaTheta")
         self.sigma_theta_btn.setToolTip(
@@ -1868,64 +1957,19 @@ class DatumWidget(QWidget):
         self.helmert_btn.setEnabled(False)
         buttons_layout.addWidget(self.helmert_btn)
 
-        # --- Filtering Controls ---
-        self.filter_chk = QCheckBox("Enable STDEV Filtering: Position|Velocity")
-        self.filter_chk.setChecked(True)
-        self.filter_chk.setToolTip("Exclude station episodes when stdev in either Cx or the ESTIMATE block exceed the set threshold")
-        buttons_layout.addWidget(self.filter_chk)
-
-        self.thresh_spinbox = QDoubleSpinBox()
-        self.thresh_spinbox.setDecimals(3)
-        self.thresh_spinbox.setRange(0.001, 100.0)
-        self.thresh_spinbox.setSingleStep(0.01)
-        self.thresh_spinbox.setValue(0.050)  # Default 5 cm
-        self.thresh_spinbox.setSuffix(" m")
-        buttons_layout.addWidget(self.thresh_spinbox)
-
-        self.vel_thresh_spinbox = QDoubleSpinBox()
-        self.vel_thresh_spinbox.setDecimals(4)
-        self.vel_thresh_spinbox.setRange(0.0001, 1.0)
-        self.vel_thresh_spinbox.setSingleStep(0.001)
-        self.vel_thresh_spinbox.setValue(0.003)  # 3 mm/yr
-        self.vel_thresh_spinbox.setSuffix(" m/yr")
-        self.vel_thresh_spinbox.setToolTip(
-               "Exclude episodes whose velocity std dev exceeds this threshold"
-           )
-        buttons_layout.addWidget(self.vel_thresh_spinbox)
-
-          # thresholds toggle
-        self.filter_chk.toggled.connect(self._on_filter_toggled)
-        self._on_filter_toggled(self.filter_chk.isChecked())
-
-        self.show_filtered_btn = QPushButton("Show Filtered Stations")
-        self.show_filtered_btn.setToolTip("List episodes removed by current filtering")
-        self.show_filtered_btn.setEnabled(False)
-        self.show_filtered_btn.clicked.connect(self.open_filtered_episodes_dialog)
-        buttons_layout.addWidget(self.show_filtered_btn)
-        
-        self.manual_select_btn = QPushButton("Manual Episode Selection")
-        self.manual_select_btn.setToolTip("Manually select episodes to include (bypasses auto-filter)")
-        self.manual_select_btn.clicked.connect(self.open_manual_selection_dialog)
-        buttons_layout.addWidget(self.manual_select_btn)
-        
         layout.addLayout(buttons_layout)
-        middle_layout = QHBoxLayout()
+        self._update_filter_status()
 
-        self.status_text = QPlainTextEdit()
-        cur_font = self.status_text.font()
-        cur_font.setPointSize(14)
-        self.status_text.setFont(cur_font)
-        self.status_text.setReadOnly(True)
-        middle_layout.addWidget(self.status_text)
-
-
-        layout.addLayout(middle_layout)
-
-        controls_layout = QGridLayout()
         self.inspect_btn = QPushButton("Inspect Matrices")
         self.inspect_btn.setToolTip("Open matrix/episode selector and preview")
         self.inspect_btn.clicked.connect(self.open_matrix_inspector)
-        controls_layout.addWidget(self.inspect_btn, 0, 0, 1, 4)
+        layout.addWidget(self.inspect_btn)
+
+        self.plot_btn = QPushButton("Plot Matrix")
+        self.plot_btn.clicked.connect(self.plot_matrix_async)
+        self.plot_btn.setEnabled(False)
+
+        layout.addStretch(1)
 
         self.matrix_display_combo = QComboBox()
         self.matrix_display_combo.addItems([
@@ -1933,9 +1977,21 @@ class DatumWidget(QWidget):
             "Cross Correlations (R)",
             "Helmert Parameters",
         ])
+        layout.addWidget(QLabel("Matrix to Export:"))
+        layout.addWidget(self.matrix_display_combo)
 
-        controls_layout.addWidget(QLabel("Matrix to Export:"), 1, 0)
-        controls_layout.addWidget(self.matrix_display_combo, 1, 1)
+        export_line = QHBoxLayout()
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["Excel (.xlsx)", "CSV (.csv)", "Text (.txt)", "NumPy (.npy)"])
+        export_line.addWidget(QLabel("Export Format:"))
+        export_line.addWidget(self.format_combo)
+
+        self.export_btn = QPushButton("Export")
+        self.export_btn.clicked.connect(self.export_data)
+        self.export_btn.setEnabled(False)
+        export_line.addWidget(self.export_btn)
+
+        layout.addLayout(export_line)
 
         self.stats_btn = QPushButton("Export Statistics Report")
         self.stats_btn.setToolTip(
@@ -1943,25 +1999,11 @@ class DatumWidget(QWidget):
         )
         self.stats_btn.clicked.connect(self.export_stats_report)
         self.stats_btn.setEnabled(False)
-        controls_layout.addWidget(self.stats_btn, 1, 2, 1, 2)
 
-        # Export/plot row
-        controls_layout.addWidget(QLabel("Export Format:"), 2, 0)
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(["Excel (.xlsx)", "CSV (.csv)", "Text (.txt)", "NumPy (.npy)"])
-        controls_layout.addWidget(self.format_combo, 2, 1)
-
-        self.export_btn = QPushButton("Export")
-        self.export_btn.clicked.connect(self.export_data)
-        self.export_btn.setEnabled(False)
-        controls_layout.addWidget(self.export_btn, 2, 2)
-
-        self.plot_btn = QPushButton("Plot Matrix")
-        self.plot_btn.clicked.connect(self.plot_matrix_async)
-        self.plot_btn.setEnabled(False)
-        controls_layout.addWidget(self.plot_btn, 2, 3)
-
-        layout.addLayout(controls_layout)
+        report_line = QHBoxLayout()
+        report_line.addWidget(self.stats_btn)
+        report_line.addWidget(self.plot_btn)
+        layout.addLayout(report_line)
 
         self.last_matrix_selection = "Sigma Theta (Σ_θ)"
         self.last_station_selection = ""
@@ -1969,12 +2011,11 @@ class DatumWidget(QWidget):
         self._matrix_inspector = None
 
     def _append_status(self, message: str) -> None:
-        self.status_text.appendPlainText(message.strip())
+        logger.info(message.strip())
 
     def _append_section(self, title: str) -> None:
-        if self.status_text.toPlainText().strip():
-            self.status_text.appendPlainText("")
-        self.status_text.appendPlainText(f"--- {title.strip()} ---")
+        logger.info("")
+        logger.info(f"--- {title.strip()} ---")
 
     def _update_stats_button(self) -> None: #disabled untill everything has been run
         ready = (
@@ -2042,6 +2083,8 @@ class DatumWidget(QWidget):
         self._clear_station_cache()  # Reset cache on new file load
         self._manual_filter_enabled = False  # Reset manual filter mode
         self._manual_selected_episodes = set()  # Clear manual selections
+        self._applied_filter = None
+        self._update_filter_status()
         label = Path(filename).name
         self._append_section(f"NEW FILE: {label}")
         self._reset_output_state()
@@ -2077,12 +2120,15 @@ class DatumWidget(QWidget):
         except RuntimeError:
             self._filtered_dialog = None
 
-    def open_manual_selection_dialog(self):
-        dlg = ManualEpisodeSelectionDialog(self, parent=self)
-        if dlg.exec_() == QDialog.Accepted:
+    def open_filter_options_dialog(self):
+        dlg = FilterOptionsDialog(self, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             manual_enabled, selected_episodes = dlg.get_selected_mode_and_episodes()
+            enabled, pos_m, vel_m = dlg.get_auto_settings()
             self._manual_filter_enabled = manual_enabled
             self._manual_selected_episodes = selected_episodes
+            self.set_filter_options(enabled, pos_m, vel_m)
+            self._update_filter_status()
             if manual_enabled:
                 self._append_status(f"[Filter] Manual selection enabled: {len(selected_episodes)} episodes selected")
             else:
@@ -2201,11 +2247,6 @@ class DatumWidget(QWidget):
             return None, f"Unknown selection: {selection}", []
 
         return matrix, title, labels
-
-    def _on_filter_toggled(self, checked: bool) -> None:
-        self.thresh_spinbox.setEnabled(checked)
-        # vel limit counts only when filtering is on
-        self.vel_thresh_spinbox.setEnabled(checked)
 
     def detect_bad_episodes_cx(
             self,
@@ -2590,7 +2631,8 @@ class DatumWidget(QWidget):
         #True only if filtering is enabled and at least one episode is excluded.
         #Optionally restrict to filtered products (Σθ, R, Helmert) via 'selection'.
         
-        if not self.filter_chk.isChecked():
+        applied = self._applied_filter
+        if applied is None or not applied.enabled:
             return False
         if not getattr(self, "_filtered_episodes_info", None):
             return False
@@ -2601,8 +2643,8 @@ class DatumWidget(QWidget):
     def _filter_tag(self) -> str:
         try:
             if self.is_filtered():
-                pos_mm = int(round(float(self.thresh_spinbox.value()) * 1000.0))
-                vel_mm = int(round(float(self.vel_thresh_spinbox.value()) * 1000.0))
+                pos_mm = int(round(self._applied_filter.pos_threshold_m * 1000.0))
+                vel_mm = int(round(self._applied_filter.vel_threshold_m_per_y * 1000.0))
                 return f"_filtered_p{pos_mm}mm_v{vel_mm}mmyr"
         except Exception:
             pass
@@ -2611,8 +2653,8 @@ class DatumWidget(QWidget):
     def _filter_disp(self) -> str:
         try:
             if self.is_filtered():
-                p = float(self.thresh_spinbox.value())
-                v = float(self.vel_thresh_spinbox.value())
+                p = self._applied_filter.pos_threshold_m
+                v = self._applied_filter.vel_threshold_m_per_y
                 return f" [filtered p={p:.3f} m, v={v:.3f} m/yr]" #
         except Exception:
             pass
@@ -2717,7 +2759,7 @@ class DatumWidget(QWidget):
         if message:
             self._append_status(message)
     def build_pandas_df(self, dataframe, title="Matrix"):
-        from PyQt5.QtCore import QAbstractTableModel, Qt, QModelIndex
+        from PyQt6.QtCore import QAbstractTableModel, Qt, QModelIndex
 
         class PandasModel(QAbstractTableModel):
             def __init__(self, data, title=""):
@@ -2728,22 +2770,22 @@ class DatumWidget(QWidget):
                 return self._data.shape[0]
             def columnCount(self, parent=QModelIndex()):
                 return self._data.shape[1]
-            def data(self, index, role=Qt.DisplayRole):
+            def data(self, index, role=Qt.ItemDataRole.DisplayRole):
                 if not index.isValid():
                     return None
 
-                if role == Qt.DisplayRole:
+                if role == Qt.ItemDataRole.DisplayRole:
                     value = self._data.iloc[index.row(), index.column()]
                     if isinstance(value, (int, float, np.number)):
                         return f"{value:.6e}"
                     return str(value)
                 return None
 
-            def headerData(self, section, orientation, role=Qt.DisplayRole):
-                if role == Qt.DisplayRole:
-                    if orientation == Qt.Horizontal:
+            def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+                if role == Qt.ItemDataRole.DisplayRole:
+                    if orientation == Qt.Orientation.Horizontal:
                         return str(self._data.columns[section])
-                    if orientation == Qt.Vertical:
+                    if orientation == Qt.Orientation.Vertical:
                         return str(self._data.index[section])
                 return None
 
@@ -2836,9 +2878,9 @@ class DatumWidget(QWidget):
                 self, 'Large Matrix Warning',
                 f"The selected matrix is very large ({matrix.shape}).\n"
                 "Plot generation may be slow. Continue?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No
             )
-            if reply == QMessageBox.No:
+            if reply == QMessageBox.StandardButton.No:
                 return
 
         self._append_status(f"generating plot: {title}")
@@ -3037,6 +3079,37 @@ class DatumWidget(QWidget):
         E = np.vstack(rows)
         return E, np.asarray(row_idx, int), k, used_episodes
 
+    def _capture_filter_settings(self) -> AppliedFilter:
+        return AppliedFilter(
+            enabled=self._filter_enabled,
+            pos_threshold_m=float(self._pos_threshold_m),
+            vel_threshold_m_per_y=float(self._vel_threshold_m_per_y),
+            manual_enabled=self._manual_filter_enabled,
+            manual_episodes=frozenset(self._manual_selected_episodes),
+        )
+
+    def set_filter_options(self, enabled: bool, pos_threshold_m: float,
+                           vel_threshold_m_per_y: float) -> None:
+        self._filter_enabled = bool(enabled)
+        self._pos_threshold_m = float(pos_threshold_m)
+        self._vel_threshold_m_per_y = float(vel_threshold_m_per_y)
+
+    @staticmethod
+    def _describe_filter(settings) -> str:
+        if settings.manual_enabled:
+            return f"Filtering: ENABLED (manual, {len(settings.manual_episodes)} episodes)"
+        if settings.enabled:
+            return (f"Filtering: ENABLED (p={settings.pos_threshold_m:.3f} m, "
+                    f"v={settings.vel_threshold_m_per_y:.4f} m/yr)")
+        return "Filtering: DISABLED"
+
+    def _update_filter_status(self) -> None:
+        pending = self._capture_filter_settings()
+        text = self._describe_filter(pending)
+        if self._applied_filter != pending:
+            text += "   (not applied yet)"
+        self.filter_status_label.setText(text)
+
     def calculate_sigma_theta(self):
         parent_app = self.window()
         if not hasattr(parent_app, "current_data") or not parent_app.current_data:
@@ -3065,9 +3138,12 @@ class DatumWidget(QWidget):
 
         self._clear_computed_products()
         sigma_bench = benchmark.begin('compute sigma theta')
+        applied = self._capture_filter_settings()
+        self._applied_filter = applied
+        self._update_filter_status()
 
         # Check if manual filtering is enabled
-        if self._manual_filter_enabled:
+        if applied.manual_enabled:
             # Manual mode: invert selection (selected = keep, all others = exclude)
             all_episodes = set()
             for p in sol:
@@ -3076,9 +3152,9 @@ class DatumWidget(QWidget):
                     episode = (p.get("code"), p.get("pt", ""), p.get("soln", ""))
                     all_episodes.add(episode)
             
-            episodes_to_exclude = all_episodes - self._manual_selected_episodes
+            episodes_to_exclude = all_episodes - applied.manual_episodes
             self._append_status(
-                f"[Filter] Manual selection: {len(self._manual_selected_episodes)} included, "
+                f"[Filter] Manual selection: {len(applied.manual_episodes)} included, "
                 f"{len(episodes_to_exclude)} excluded"
             )
             
@@ -3129,9 +3205,9 @@ class DatumWidget(QWidget):
                 })
         
         #Combined filtering: Cx diag + STD_DEV column
-        elif self.filter_chk.isChecked():
-            pos_thresh = float(self.thresh_spinbox.value())  # m
-            vel_thresh = float(self.vel_thresh_spinbox.value())  # m/yr
+        elif applied.enabled:
+            pos_thresh = applied.pos_threshold_m  # m
+            vel_thresh = applied.vel_threshold_m_per_y  # m/yr
 
             # Cx
             episodes_cx, _ = self.detect_bad_episodes_cx(
@@ -3640,66 +3716,125 @@ class MatrixInspectorDialog(QDialog):
             model = self.host.build_pandas_df(df, "Error")
             self.table.setModel(model)
 
-class ManualEpisodeSelectionDialog(QDialog):
+class FilterOptionsDialog(QDialog):
     def __init__(self, host: "DatumWidget", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Manual Episode Selection")
+        self.setWindowTitle("Filter Options")
         self.host = host
-        self.resize(600, 700)
-        
+        self.resize(520, 620)
+
         layout = QVBoxLayout(self)
-        
-        # Radio toggle for filter mode
-        mode_layout = QHBoxLayout()
-        self.auto_radio = QRadioButton("Auto Filter (Sigma)")
-        self.manual_radio = QRadioButton("Manual Selection")
-        
-        # Set current mode
-        if self.host._manual_filter_enabled:
-            self.manual_radio.setChecked(True)
-        else:
-            self.auto_radio.setChecked(True)
-        
-        self.auto_radio.toggled.connect(self._on_mode_changed)
-        mode_layout.addWidget(self.auto_radio)
-        mode_layout.addWidget(self.manual_radio)
-        layout.addLayout(mode_layout)
-        
-        # Scroll area for station groups
+
+        mode_row = QHBoxLayout()
+        self.auto_radio = QRadioButton("Auto filter")
+        self.manual_radio = QRadioButton("Manual selection")
+        mode_row.addWidget(self.auto_radio)
+        mode_row.addWidget(self.manual_radio)
+        mode_row.addStretch(1)
+        layout.addLayout(mode_row)
+
+        self.auto_group = QGroupBox("Sigma thresholds")
+        auto_layout = QVBoxLayout(self.auto_group)
+
+        self.filter_chk = QCheckBox("Enable STDEV Filtering: Position|Velocity")
+        self.filter_chk.setChecked(host._filter_enabled)
+        self.filter_chk.setToolTip("Exclude station episodes when stdev in either Cx or the ESTIMATE block exceed the set threshold")
+        auto_layout.addWidget(self.filter_chk)
+
+        self.thresh_spinbox = QDoubleSpinBox()
+        self.thresh_spinbox.setDecimals(3)
+        self.thresh_spinbox.setRange(0.001, 100.0)
+        self.thresh_spinbox.setSingleStep(0.01)
+        self.thresh_spinbox.setValue(host._pos_threshold_m)
+        self.thresh_spinbox.setSuffix(" m")
+
+        self.vel_thresh_spinbox = QDoubleSpinBox()
+        self.vel_thresh_spinbox.setDecimals(4)
+        self.vel_thresh_spinbox.setRange(0.0001, 1.0)
+        self.vel_thresh_spinbox.setSingleStep(0.001)
+        self.vel_thresh_spinbox.setValue(host._vel_threshold_m_per_y)
+        self.vel_thresh_spinbox.setSuffix(" m/yr")
+        self.vel_thresh_spinbox.setToolTip(
+            "Exclude episodes whose velocity std dev exceeds this threshold"
+        )
+
+        thresh_form = QGridLayout()
+        thresh_form.addWidget(QLabel("Position:"), 0, 0)
+        thresh_form.addWidget(self.thresh_spinbox, 0, 1)
+        thresh_form.addWidget(QLabel("Velocity:"), 1, 0)
+        thresh_form.addWidget(self.vel_thresh_spinbox, 1, 1)
+        thresh_form.setColumnStretch(1, 1)
+        auto_layout.addLayout(thresh_form)
+
+        self.filter_chk.toggled.connect(self._on_filter_toggled)
+        layout.addWidget(self.auto_group)
+
+        self.manual_group = QGroupBox("Episodes to include")
+        manual_layout = QVBoxLayout(self.manual_group)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll_widget = QWidget()
         self.checkboxes_layout = QVBoxLayout(scroll_widget)
         scroll.setWidget(scroll_widget)
-        layout.addWidget(scroll)
-        
-        # Store checkboxes by episode key
-        self.episode_checkboxes = {}  # {(code, pt, soln): QCheckBox}
-        
-        # Populate checkboxes grouped by station
+        manual_layout.addWidget(scroll)
+        layout.addWidget(self.manual_group, 1)
+
+        self.episode_checkboxes = {}
         self._populate_episodes()
-        
-        # OK/Cancel buttons
+
+        if not self.episode_checkboxes:
+            self.checkboxes_layout.addWidget(
+                QLabel("No episodes available. Load a SINEX file first.")
+            )
+            self.manual_radio.setEnabled(False)
+
+        if host._manual_filter_enabled and self.episode_checkboxes:
+            self.manual_radio.setChecked(True)
+        else:
+            self.auto_radio.setChecked(True)
+
+        self.auto_radio.toggled.connect(self._on_mode_changed)
+
         button_layout = QHBoxLayout()
         ok_btn = QPushButton("OK")
         cancel_btn = QPushButton("Cancel")
         ok_btn.clicked.connect(self.accept)
         cancel_btn.clicked.connect(self.reject)
+        button_layout.addStretch(1)
         button_layout.addWidget(ok_btn)
         button_layout.addWidget(cancel_btn)
         layout.addLayout(button_layout)
-        
-        # Update checkbox enabled state based on mode
-        self._update_checkboxes_enabled()
-    
+
+        self._on_mode_changed()
+
+    def _on_filter_toggled(self, checked: bool) -> None:
+        self.thresh_spinbox.setEnabled(checked)
+        # vel limit counts only when filtering is on
+        self.vel_thresh_spinbox.setEnabled(checked)
+
+    def _manual_mode(self) -> bool:
+        return self.manual_radio.isChecked()
+
+    def get_auto_settings(self):
+        return (self.filter_chk.isChecked(),
+                float(self.thresh_spinbox.value()),
+                float(self.vel_thresh_spinbox.value()))
+
     def _on_mode_changed(self):
+        manual = self._manual_mode()
+        self.auto_group.setEnabled(not manual)
+        self.manual_group.setEnabled(manual)
+        if not manual:
+            self._on_filter_toggled(self.filter_chk.isChecked())
         self._update_checkboxes_enabled()
-    
+
     def _update_checkboxes_enabled(self):
         # Enable checkboxes only in manual mode
-        enabled = self.manual_radio.isChecked()
+        enabled = self._manual_mode()
         for checkbox in self.episode_checkboxes.values():
             checkbox.setEnabled(enabled)
+
     
     def _populate_episodes(self):
         # Get SOLUTION/ESTIMATE data
@@ -3884,7 +4019,7 @@ class VarianceFactorDialog(QDialog):
         self.radio_default = QRadioButton("Default (from file)")
         self.radio_default.setChecked(True)
         self.default_label = QLabel(f"  Value: {default_value}" if default_value is not None else "  Value: N/A")
-        self.default_label.setStyleSheet("color: #555; font-size: 11px;")
+        self.default_label.setStyleSheet("font-size: 11px;")
 
         # custom radio
         self.radio_custom = QRadioButton("Custom")
@@ -3947,7 +4082,7 @@ class FileInfoWidget(QWidget):
         self.station_label = QLabel("Stations Found (SITE/ID): --")
         self.aprcov_label = QLabel("Apriori Covariance Found: --")
         # font styling
-        label_style = "font-size: 18px; color: #2c3e50;"
+        label_style = "font-size: 18px;"
         self.vf_label.setStyleSheet(label_style)
         self.station_label.setStyleSheet(label_style)
         self.aprcov_label.setStyleSheet(label_style)
@@ -3965,7 +4100,7 @@ class FileInfoWidget(QWidget):
                 default_vf = raw
 
         dlg = VarianceFactorDialog(default_vf, parent=self)
-        if dlg.exec() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             self.main_app.custom_variance_factor = dlg.chosen_value()
             self.update_display()
 

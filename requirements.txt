@@ -5,8 +5,8 @@ matplotlib>=3.3.0
 seaborn>=0.11.0
 
 # GUI
-PyQt5>=5.15.0
-PyQtWebEngine>=5.15.0
+PyQt6>=6.5.0
+PyQt6-WebEngine>=6.5.0
 pyqtgraph>=0.13.0
 
 # Mapping and visualization
