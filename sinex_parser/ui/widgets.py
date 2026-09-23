@@ -25,7 +25,6 @@ from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 import pyqtgraph as pg
 import matplotlib
 from matplotlib import cm, colors as mcolors
-from matplotlib.patches import Patch
 from pyqtgraph.exporters import ImageExporter
 pg.setConfigOptions(imageAxisOrder="row-major", useOpenGL=True, antialias=False)
 matplotlib.use("QtAgg")  # ensure Qt5 backend
@@ -38,11 +37,13 @@ from .. import __version__
 
 from ..core import (
     logger, benchmark, remember_dialog_dir, default_save_path, ensure_suffix,
+    default_export_format, default_pos_threshold, default_vel_threshold,
 )
-from ..core import (
-    logger, benchmark, remember_dialog_dir, default_save_path, ensure_suffix,
-)
-from ..parsers import SinexBlockParser, MatrixEstimateParser
+from ..io import SinexBlockParser, MatrixEstimateParser
+from ..io import export, figures, reader
+from ..analysis import datum as datum_math
+from ..analysis import normal as normal_math
+from ..analysis import reporting
 
 
 CONTROL_COLUMN_WIDTH = 470
@@ -85,112 +86,13 @@ class ParserWorker(QThread):
         self.result_data = None
         self.parse_generation = None
     def run(self):
-        start_time = time.time()
-        logger.info(f"Starting parse of file: {self.filename.name}")
-        gen = self.parse_generation
-        parse_token = benchmark.begin('parse file (all blocks)', gen)
-        stream_token = None
-
-        sinex_data = {
-            'header': [],
-            'blocks': {},
-            'metadata': {'filename': self.filename.name}
-        }
-        cur_block = None
-        cur_block_data = []
-        total_lines = 0
-        skipping_epoch = False
-        statistics = None
-        # streaming state for matrix blocks
-        streaming_parser = None
-
         try:
-            with open(self.filename, 'r', encoding='utf-8') as file:
-                for line in file:
-                    total_lines += 1
-                    ln = line.rstrip()
-
-                    if len(ln) == 0:
-                        continue
-
-                    if ln[0].startswith('*'):
-                        sinex_data['header'].append(ln)
-                    elif ln.startswith('+'):
-                        cur_block = ln[1:].strip()
-                        cur_block_data = []
-                        streaming_parser = None
-
-                        if cur_block in ['SOLUTION/EPOCHS']:
-                            if self.skip_epochs_block: 
-                                skipping_epoch = True
-                                logger.info(f"Skipping SOLUTION/EPOCHS block")
-                            else:
-                                skipping_epoch = False
-                                logger.info(f"Parsing block: {cur_block}")
-
-                        if cur_block in self.block_parsers:
-                            parser = self.block_parsers[cur_block]
-                            if isinstance(parser, MatrixEstimateParser):
-                                # find matrix dim from SOLUTION/ESTIMATE
-                                est = sinex_data['blocks'].get('SOLUTION/ESTIMATE')
-                                if est is not None:
-                                    sz = len(est)
-                                    parser.init_stream(sz)
-                                    streaming_parser = parser
-                                    stream_token = benchmark.begin(f'stream {cur_block}', gen)
-                                    logger.info(f"Stream-parsing {cur_block} ({sz}x{sz})")
-                                else:
-                                    streaming_parser = None
-
-                    elif ln.startswith('-'):
-                        logger.info(f"End of reading block: {cur_block}")
-
-                        if streaming_parser is not None and streaming_parser.is_streaming:
-                            parsed = streaming_parser.finalize_stream()
-                            sinex_data['blocks'][cur_block] = parsed
-                            benchmark.end(stream_token)
-                            stream_token = None
-                            streaming_parser = None
-
-                        elif cur_block in self.block_parsers and len(cur_block_data) > 0:
-                            parser = self.block_parsers[cur_block]
-                            if self.skip_validation or parser.validate(cur_block_data):
-                                parsed = parser.parse(cur_block_data)
-                                sinex_data['blocks'][cur_block] = parsed
-                                logger.info(f"Parsed {cur_block} with {len(cur_block_data)} lines.")
-                                if cur_block == 'SOLUTION/STATISTICS':
-                                    statistics = cur_block_data
-                                    print(statistics)
-
-                                    logger.info(f"Values read:\n{cur_block_data}")
-                                else:
-                                    pass
-                            else:
-                                logger.debug(f"Couldn't parse block: {cur_block}")
-                        else:
-                            logger.debug(f"{cur_block} is not a valid block")
-                        cur_block = None
-                        cur_block_data = []
-                        skipping_epoch = False
-                    elif cur_block:
-                        if not skipping_epoch:
-                            if streaming_parser is not None:
-                            #stream into numpy array
-                                streaming_parser.feed_line(ln)
-                            else:
-                                cur_block_data.append(ln)
-            self.result_data = sinex_data
-
-            logger.info(f"Finished parse of {self.filename.name} in {time.time()-start_time:.3f}s.")
-            logger.info(f"Total lines read: {total_lines}, blocks: {len(sinex_data['blocks'])}.")
-            benchmark.end(parse_token)
-            print(statistics)
+            self.result_data = reader.parse_sinex_file(
+                self.filename, self.block_parsers, self.skip_epochs_block,
+                self.skip_validation, self.parse_generation,
+            )
             self.finished.emit()
-
         except Exception as e:
-            benchmark.cancel(stream_token)
-            benchmark.cancel(parse_token)
-            logger.exception("Parsing error")
             self.error.emit(str(e))
 
 ###############################################################################
@@ -1391,6 +1293,7 @@ class OperationsWidget(QWidget):
         export_line = QHBoxLayout()
         self.format_combo = QComboBox()
         self.format_combo.addItems(["Excel (.xlsx)","CSV (.csv)","Text (.txt)","NumPy (.npy)"])
+        self.format_combo.setCurrentText(default_export_format())
         export_line.addWidget(QLabel("Export Format:"))
         export_line.addWidget(self.format_combo)
 
@@ -1432,14 +1335,9 @@ class OperationsWidget(QWidget):
         )
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            t0 = time.time()
-            with benchmark.span('rank of N (SVD)'):
-                rank_n = np.linalg.matrix_rank(N)
-            elapsed = time.time() - t0
+            rank_n, elapsed = normal_math.rank_of_normal_matrix(N)
         finally:
             QApplication.restoreOverrideCursor()
-        logger.info(f"rank(N): {rank_n}/{N.shape[0]}")
-        logger.info(f"Rank computed in {elapsed:.3f} seconds.")
         deficiency = N.shape[0] - int(rank_n)
         self.log_text.appendPlainText(
             f"rank(N) = {rank_n} of {N.shape[0]}, deficiency {deficiency}, {elapsed:.3f} s"
@@ -1462,39 +1360,19 @@ class OperationsWidget(QWidget):
         normal_bench = benchmark.begin('compute normal matrix N')
 
 
-        Qx = Cov_final / var_factor
-
         apr_key = "SOLUTION/MATRIX_APRIORI L COVA"
         apr_data = parent_app.current_data['blocks'].get(apr_key)
         if apr_data is None:
             apr_key = "SOLUTION/MATRIX_APRIORI U COVA"
             apr_data = parent_app.current_data['blocks'].get(apr_key)
 
-        if apr_data is not None:
-            from ..core import align_apriori_info_matrix, inflate_or_trim_matrix
-            final_dim = Qx.shape[0]
-            self._apriori_matrix = inflate_or_trim_matrix(apr_data, final_dim)
-            logger.info(f"Apriori covariance block found in {apr_key}, dimension={apr_data.shape}.")
-            # N = inv(Qx) - inv(C0): remove apriori constraint in information space
-            try:
-                N = np.linalg.inv(Qx) - align_apriori_info_matrix(apr_data, final_dim)
-            except np.linalg.LinAlgError:
-                benchmark.cancel(normal_bench)
-                QMessageBox.critical(self, "Error", "Inversion failed during N = inv(Qx) - inv(C0).")
-                logger.warning("Inversion failed during N = inv(Qx) - inv(C0) => Normal matrix not set.")
-                return
-            logger.info("Normal matrix computed as N = inv(Qx) - inv(C0).")
-        else:
-            self._apriori_matrix = None
-            logger.info("No apriori covariance block found.")
-            try:
-                N = np.linalg.inv(Qx)
-            except np.linalg.LinAlgError:
-                benchmark.cancel(normal_bench)
-                QMessageBox.critical(self, "Error", "Inversion of Qx failed.")
-                logger.warning("Failed to invert Qx => Normal matrix not set.")
-                return
-            logger.info("Normal matrix computed as N = inv(Qx).")
+        try:
+            N, self._apriori_matrix = normal_math.build_normal_matrix(
+                Cov_final, var_factor, apr_data, apr_key)
+        except normal_math.NormalMatrixError as exc:
+            benchmark.cancel(normal_bench)
+            QMessageBox.critical(self, "Error", str(exc))
+            return
 
         self._normal_matrix = N
         # new N -> clear past data
@@ -1531,11 +1409,6 @@ class OperationsWidget(QWidget):
             QMessageBox.critical(self, "Error", "SOLUTION/APRIORI block is missing.")
             return
 
-        apr_lookup = {
-            (p['code'], p['type'], p['pt'], p['soln']): p['value']
-            for p in apr_data
-        }
-
         n = len(est_data)
         if self._normal_matrix.shape[0] != n:
             QMessageBox.critical(
@@ -1545,81 +1418,20 @@ class OperationsWidget(QWidget):
             )
             return
 
-        u_bench = benchmark.begin('compute u = N*dx')
-        dx = np.zeros((n, 1), dtype=float)
-        unmatched_count = 0
-
-        # make dx by going through the estimate data and matching each parameter to its a priori value.
-        for i, p_est in enumerate(est_data):
-            key = (p_est['code'], p_est['type'], p_est['pt'], p_est['soln'])
-            val_apr = apr_lookup.get(key, 0.0)
-            if key not in apr_lookup:
-                unmatched_count += 1
-            dx[i, 0] = p_est['value'] - val_apr
-
-        if unmatched_count > 0:
-            logger.warning(
-                f"{unmatched_count} parameters in ESTIMATE were not found in APRIORI. "
-                "Their a priori values were assumed to be 0."
-            )
-
-        u = self._normal_matrix @ dx
+        u, dx = normal_math.compute_u(self._normal_matrix, est_data, apr_data)
         self._u_vector = u
         self._dx_vector = dx  # store for reverse ver
-
-        benchmark.end(u_bench)
         dur = time.time() - t0
         logger.info(f"Computed u in {dur:.3f}s, shape={u.shape}")
         QMessageBox.information(self, "Success", "u = N*(Xest - Xapr) computed.")
 
     def reverse_verify(self):
-        if self._normal_matrix is None:
-            self.log_text.appendPlainText("Error: Normal Matrix (N) not computed yet.")
-            return
-        if self._u_vector is None:
-            self.log_text.appendPlainText("Error: Vector u not computed yet.")
-            return
-        if self._dx_vector is None:  
-            self.log_text.appendPlainText("Error: Original dx vector not available.")
-            return
+        for line in normal_math.recomputation_check(
+                self._normal_matrix, self._u_vector, self._dx_vector):
+            self.log_text.appendPlainText(line)
 
-        self.log_text.appendPlainText("\n------ Performing Recomputation Check ------")
-        u_computed = self._u_vector
-        dx_original = self._dx_vector
 
-        # Verification: dx' = N^-1 * u  (since u = N * dx must never give dx)
-        try:
-            N_inv = np.linalg.inv(self._normal_matrix)
-        except np.linalg.LinAlgError:
-            self.log_text.appendPlainText("Error: Cannot invert N for verification.")
-            return
 
-        dx_recomputed = N_inv @ u_computed
-        difference_vector = dx_original - dx_recomputed
-        #for informative purposes mostly
-        # L2 Norm
-        l2_norm_of_difference = np.linalg.norm(difference_vector)
-        # Infinity Norm
-        inf_norm_of_difference = np.linalg.norm(difference_vector, ord=np.inf)
-        # Relative error
-        norm_of_original = np.linalg.norm(dx_original)
-        self.log_text.appendPlainText(f"Original dx norm: {norm_of_original:.6e}")
-        self.log_text.appendPlainText(f"Recomputed dx norm: {np.linalg.norm(dx_recomputed):.6e}")
-        self.log_text.appendPlainText(f"Difference Norm (L2): {l2_norm_of_difference:.6e}")
-        self.log_text.appendPlainText(f"Max Absolute Difference: {inf_norm_of_difference:.6e}")
-        if norm_of_original == 0:
-            # if dx is zero u = N*dx is zero for any N 
-            self.log_text.appendPlainText(
-                "recomp check is invalid because dx is zero "              
-            )
-            return
-        relative_error = l2_norm_of_difference / norm_of_original
-        self.log_text.appendPlainText(f"Relative Error: {relative_error:.6e} (or {relative_error:.4%})")
-        if relative_error > 1e-6:
-            self.log_text.appendPlainText(
-                "WARNING: relative_error > 1e-6")
-        else:
-            self.log_text.appendPlainText("PASS: relative_error <= 1e-6")
 
 
 
@@ -1861,12 +1673,7 @@ class InfoWidget(QWidget):
         layout.addLayout(bottom_layout, 1)
 
 
-class AppliedFilter(NamedTuple):
-    enabled: bool
-    pos_threshold_m: float
-    vel_threshold_m_per_y: float
-    manual_enabled: bool
-    manual_episodes: frozenset
+AppliedFilter = datum_math.AppliedFilter
 
 
 class DatumWidget(QWidget):
@@ -1885,8 +1692,8 @@ class DatumWidget(QWidget):
         self._manual_selected_episodes = set()  #episodes to INCLUDE
         self._applied_filter = None
         self._filter_enabled = True
-        self._pos_threshold_m = 0.050
-        self._vel_threshold_m_per_y = 0.003
+        self._pos_threshold_m = default_pos_threshold()
+        self._vel_threshold_m_per_y = default_vel_threshold()
         self._setup_ui()
         self._filtered_episodes_info = []  # list of dicts with details
         self._filtered_dialog = None  # dialog instance
@@ -1983,6 +1790,7 @@ class DatumWidget(QWidget):
         export_line = QHBoxLayout()
         self.format_combo = QComboBox()
         self.format_combo.addItems(["Excel (.xlsx)", "CSV (.csv)", "Text (.txt)", "NumPy (.npy)"])
+        self.format_combo.setCurrentText(default_export_format())
         export_line.addWidget(QLabel("Export Format:"))
         export_line.addWidget(self.format_combo)
 
@@ -2248,205 +2056,6 @@ class DatumWidget(QWidget):
 
         return matrix, title, labels
 
-    def detect_bad_episodes_cx(
-            self,
-            sol: list,
-            Cx: np.ndarray,
-            pos_threshold_m: float = 0.05,
-            vel_threshold_m_per_y: float = 0.003,
-            include_vel: bool = True,
-    ):
-        """
-        Detect episodes with excessive coordinate uncertainties by examining diagonal covariance elements.
-        
-        Filters episodes where position (STAX/STAY/STAZ) or velocity (VELX/VELY/VELZ) standard deviations
-        exceed specified thresholds. Uses the maximum component uncertainty for each episode.
-        
-        Returns (excluded_episodes_set, details_list).
-        details_list contains dicts with episode label, sds, thresholds, and exceedance/score.
-        """
-        # Map parameter indices and identify which episodes have position/velocity data
-        idx_map, coords, have_pos, have_vel = self._collect_indices(sol)
-
-        def _sd(i: int) -> float:
-            """Extract standard deviation from diagonal covariance element, clamping negatives to zero."""
-            v = float(Cx[i, i])
-            if v < 0.0:
-                v = 0.0
-            return float(np.sqrt(v))
-
-        excluded = set()
-        details = []
-
-        # Statistics for reporting
-        n_total_pos = 0
-        n_excl_pos = 0
-        n_considered_vel = 0
-        n_excl_vel = 0
-
-        for episode in sorted(have_pos):
-            code, pt, soln = episode
-            try:
-                # Retrieve matrix indices for X, Y, Z position components
-                ix = idx_map[(code, "STAX", pt, soln)]
-                iy = idx_map[(code, "STAY", pt, soln)]
-                iz = idx_map[(code, "STAZ", pt, soln)]
-            except KeyError:
-                continue
-
-            n_total_pos += 1
-            # Compute standard deviations from covariance diagonal
-            sx, sy, sz = _sd(ix), _sd(iy), _sd(iz)
-            pos_max = max(sx, sy, sz)
-            pos_excess = max(0.0, pos_max - pos_threshold_m)
-
-            # Check velocity
-            vel_present = include_vel and (episode in have_vel)
-            svx = svy = svz = np.nan
-            vel_max = 0.0
-            vel_excess = 0.0
-            if vel_present:
-                ivx = idx_map.get((code, "VELX", pt, soln))
-                ivy = idx_map.get((code, "VELY", pt, soln))
-                ivz = idx_map.get((code, "VELZ", pt, soln))
-                if None not in (ivx, ivy, ivz):
-                    n_considered_vel += 1
-                    svx, svy, svz = _sd(ivx), _sd(ivy), _sd(ivz)
-                    vel_max = max(svx, svy, svz)
-                    vel_excess = max(0.0, vel_max - vel_threshold_m_per_y)
-
-            # Determine if episode should be excluded and which component triggered it
-            trig = ""
-            exclude = False
-            if pos_excess > 0.0:
-                exclude = True
-                trig = "pos"
-                n_excl_pos += 1
-            if vel_present and vel_excess > 0.0:
-                exclude = True
-                trig = "vel" if vel_excess >= pos_excess else trig
-                if trig == "vel":
-                    n_excl_vel += 1
-
-            if exclude:
-                excluded.add(episode)
-
-            # Compute normalized exceedance score (how many times over threshold)
-            score = 0.0
-            if pos_threshold_m > 0.0 and pos_excess > 0.0:
-                score = max(score, pos_excess / pos_threshold_m)
-            if vel_threshold_m_per_y > 0.0 and vel_excess > 0.0:
-                score = max(score, vel_excess / vel_threshold_m_per_y)
-
-            details.append(
-                {
-                    "label": f"{code}.{pt}.{soln}",
-                    "code": code,
-                    "pt": pt,
-                    "soln": soln,
-                    "trigger": trig if exclude else "",
-                    "pos_max": pos_max,
-                    "pos_thr": pos_threshold_m,
-                    "pos_excess": pos_excess,
-                    "vel_max": vel_max if vel_present else np.nan,
-                    "vel_thr": vel_threshold_m_per_y if vel_present else np.nan,
-                    "vel_excess": vel_excess if vel_present else np.nan,
-                    "sx": sx,
-                    "sy": sy,
-                    "sz": sz,
-                    "svx": svx,
-                    "svy": svy,
-                    "svz": svz,
-                    "score": score if exclude else 0.0,
-                    "excluded": exclude,
-                }
-            )
-
-        self._append_status(
-            "[Filter] episode filter (Cx diag): "
-            f"pos_total={n_total_pos}, pos_excluded={n_excl_pos}, "
-            f"vel_considered={n_considered_vel}, vel_excluded={n_excl_vel}"
-        )
-        return excluded, details
-
-    def _build_keep_mask(self, sol: list, episodes_to_exclude: set, remove_vel: bool = True) -> np.ndarray:
-        """
-        Build boolean mask over sol est values.
-        Omits STAX/STAY/STAZ/VELX/VELY/VELZ of excluded episodes.
-        If remove_vel is True, omits all VELX/VELY/VELZ regardless.
-        """
-        station_pos = {"STAX", "STAY", "STAZ"}
-        station_vel = {"VELX", "VELY", "VELZ"}
-        keep = np.ones(len(sol), dtype=bool)
-        filtered_pos = 0
-        filtered_vel = 0
-
-        for i, p in enumerate(sol):
-            t = p.get("type", "")
-
-            # Only check parameters that are part of an episode
-            if t in station_pos or t in station_vel:
-                key = (p.get("code"), p.get("pt", ""), p.get("soln"))
-
-                # Condition 1: Exclude if the episode is in the bad list
-                if key in episodes_to_exclude:
-                    keep[i] = False
-                    if t in station_pos:
-                        filtered_pos += 1
-                    else:
-                        filtered_vel += 1
-
-                # Condition 2: ALSO exclude if it's a velocity and remove_vel is flagged
-                elif remove_vel and t in station_vel:
-                    keep[i] = False
-                    filtered_vel += 1
-
-        self._append_status(
-            f"[Filter] filter mask: kept={int(keep.sum())}/{len(keep)} "
-            f"(filtered_pos={filtered_pos}, filtered_vel={filtered_vel})"
-        )
-        return keep
-
-    def detect_bad_episodes(self, sol, threshold=0.05):
-        """
-        Flag episodes where any parameter's sigma exceeds the threshold.
-        Returns a set of episode keys (station_code, point_code, solution_id).
-        """
-        # Group parameters by episode: each episode may have multiple parameter types (STAX, STAY, etc.)
-        episodes: Dict[tuple, list] = {}
-        for p in sol:
-            key = (p.get("code"), p.get("pt"), p.get("soln"))
-            episodes.setdefault(key, []).append(p)
-
-        excluded_episodes = set()
-        self._append_status(f"[Filter] filtering episodes with sigma > {threshold:.3f}")
-
-        zero_sigma = sum(1 for p in sol if p.get("sigma", 0.0) == 0.0)
-        if zero_sigma:
-            message = f"[Filter] {zero_sigma} of {len(sol)} parameters have sigma 0 and cannot be flagged by this filter"
-            self._append_status(message)
-            logger.warning(message)
-        
-        # For each episode, check if any parameter exceeds the threshold and flag entire episode if any single parameter is bad
-        for key, params in episodes.items():
-            for p in params:
-                sigma = p.get("sigma", float("inf"))
-                if sigma > threshold:
-                    excluded_episodes.add(key)
-                    logger.debug(
-                        f"[Filter] Flagging episode {key} for exclusion (sigma = {sigma:.3f})"
-                    )
-                    break  # No point checking remaining parameterss for this episode
-
-        if excluded_episodes:
-            logger.info(
-                f"[Filter] flagged {len(excluded_episodes)} episodes for exclusion"
-            )
-            self._append_status(
-                f"[Filter] flagged {len(excluded_episodes)} episodes for exclusion"
-            )
-        return excluded_episodes
-
     def calculate_cross_correlations(self):
        # cross-correlation matrix R(i,j) = cov(ij)/(σi * σj)
         if self.sigma_theta_matrix is None:
@@ -2458,47 +2067,8 @@ class DatumWidget(QWidget):
             bench.__enter__()
             self._append_section("Cross Correlation calculation")
 
-            sigma_theta = self.sigma_theta_matrix
-            n = sigma_theta.shape[0]
-            self._append_status(f"sigma theta shape: {sigma_theta.shape}")
-            diagonal_elements = np.diag(sigma_theta)
-            std_devs = np.sqrt(diagonal_elements)
-            self._append_status(
-                f"std dev range: {np.min(std_devs):.6e} to {np.max(std_devs):.6e}"
-            )
-            cross_corr = np.zeros_like(sigma_theta)
-
-            for i in range(n):
-                for j in range(n):
-                    if std_devs[i] <= 1e-15 or std_devs[j] <= 1e-15:
-                        self._append_status(
-                            f"Warning: Near-zero std dev for indices {i}, {j}"
-                        )
-                    with np.errstate(divide='ignore', invalid='ignore'):
-                        cross_corr[i, j] = sigma_theta[i, j] / (std_devs[i] * std_devs[j])
+            cross_corr = datum_math.cross_correlations(self.sigma_theta_matrix)
             self.cross_correlation_matrix = cross_corr
-
-            # statistics
-            off_diagonal_mask = ~np.eye(n, dtype=bool)
-            off_diagonal_values = cross_corr[off_diagonal_mask]
-            min_corr = np.min(off_diagonal_values)
-            max_corr = np.max(off_diagonal_values)
-            mean_abs_corr = np.mean(np.abs(off_diagonal_values))
-
-            self._append_status(
-                "cross correlation stats: "
-                f"shape={cross_corr.shape}, min={min_corr:.6f}, "
-                f"max={max_corr:.6f}, mean_abs={mean_abs_corr:.6f}"
-            )
-            self._append_status(f"cond(R): {np.linalg.cond(cross_corr):.2e}")
-            # check matrix is symmetric
-            symmetry_error = np.max(np.abs(cross_corr - cross_corr.T))
-            if symmetry_error > 1e-12:
-                self._append_status(
-                    f"matrix symmetry delta {symmetry_error:.6e} (exceeds tolerance)"
-                )
-            else:
-                self._append_status(f"matrix symmetry passed check: max|R - R^T| = {symmetry_error:.6e}")
 
             self.export_btn.setEnabled(True)
             self.plot_btn.setEnabled(True)
@@ -2521,68 +2091,8 @@ class DatumWidget(QWidget):
 
     def _render_helmert_bar(self, values: np.ndarray, title: str, subtitle: str | None = None,
                              default_name: str | None = None):
-        arr = np.asarray(values, dtype=float).flatten()
-        if arr.size == 0:
-            raise ValueError("No Helmert parameters available for plotting")
-
-        if arr.size == 7:
-            labels = ["tx", "ty", "tz", "δs", "εx", "εy", "εz"]
-        elif arr.size == 14:
-            labels = ["tx", "ty", "tz", "δs", "εx", "εy", "εz",
-                      "tx_v", "ty_v", "tz_v", "δs_v", "εx_v", "εy_v", "εz_v"]
-        else:
-            labels = [f"p{i + 1}" for i in range(arr.size)]
-
-        # Display only, stored values stay in SI. Rotation and scale times the Earth
-        # radius give the displacement at the surface, so all bars read in mm.
-        conv_val = 6378137000.0  # GRS80 semi-major axis in mm
-        GROUPS = {
-            "translation": (1e3, "mm", "#4c72b0"),
-            "scale": (conv_val, "mm", "#dd8452"),
-            "rotation": (conv_val, "mm", "#55a868"),
-            "other": (1.0, "", "#8172b3"),
-        }
-
-        def group_of(label):
-            base = label.split("_")[0]
-            if base in ("tx", "ty", "tz"):
-                return "translation"
-            if base in ("δs",):
-                return "scale"
-            if base in ("εx", "εy", "εz"):
-                return "rotation"
-            return "other"
-
-        groups = [group_of(l) for l in labels]
-        scaled = np.array([arr[i] * GROUPS[g][0] for i, g in enumerate(groups)])
-        colors = [GROUPS[g][2] for g in groups]
-        rate = [l.endswith("_v") for l in labels]
-        tick_labels = [
-            f"{l}\n[{GROUPS[g][1]}{'/yr' if r else ''}]" if GROUPS[g][1] else l
-            for l, g, r in zip(labels, groups, rate)
-        ]
-
-        fig, ax = plt.subplots(figsize=(16, 10))
+        fig, ax = figures.build_helmert_bar(values, title, subtitle)
         set_current_figure(self, fig)
-        ax.format_coord = lambda x, y: ""  # blank the toolbar cursor readout
-        bars = ax.bar(tick_labels, scaled, color=colors)
-        ax.grid(axis="y", linestyle=":", linewidth=0.6, color="gray")
-        ax.set_axisbelow(True)
-        ax.axhline(0.0, color="black", linewidth=0.8)
-        present = [g for g in GROUPS if g in groups]
-        if len(present) > 1:
-            ax.legend(
-                handles=[Patch(facecolor=GROUPS[g][2],
-                               label=f"{g} [{GROUPS[g][1]}]" if GROUPS[g][1] else g)
-                         for g in present],
-                loc="best",
-            )
-        if subtitle:
-            ax.set_title(f"{title}\n{subtitle}")
-        else:
-            ax.set_title(title)
-        ax.bar_label(bars, fmt="%.4g", padding=6)
-        fig.tight_layout()
 
         if default_name:
             try:
@@ -2604,9 +2114,7 @@ class DatumWidget(QWidget):
                 bench = benchmark.span('compute Helmert parameters')
                 bench.__enter__()
                 self._append_section("Helmert parameters")
-                sigma_theta = self.sigma_theta_matrix
-                st_diag = np.diag(sigma_theta)
-                hparam = np.sqrt(st_diag).reshape(-1, 1)
+                hparam = datum_math.helmert_parameters(self.sigma_theta_matrix)
                 self.helmert_params = hparam
                 if self.matrix_display_combo.currentText() == "Helmert Parameters":
                     self.update_matrix_display()
@@ -2631,34 +2139,20 @@ class DatumWidget(QWidget):
         #True only if filtering is enabled and at least one episode is excluded.
         #Optionally restrict to filtered products (Σθ, R, Helmert) via 'selection'.
         
-        applied = self._applied_filter
-        if applied is None or not applied.enabled:
-            return False
-        if not getattr(self, "_filtered_episodes_info", None):
+        if not datum_math.is_filtered(self._applied_filter,
+                                      getattr(self, "_filtered_episodes_info", None)):
             return False
         if selection is None:
             return True
         return selection in ("Sigma Theta (Σ_θ)", "Cross Correlations (R)", "Helmert Parameters")
 
     def _filter_tag(self) -> str:
-        try:
-            if self.is_filtered():
-                pos_mm = int(round(self._applied_filter.pos_threshold_m * 1000.0))
-                vel_mm = int(round(self._applied_filter.vel_threshold_m_per_y * 1000.0))
-                return f"_filtered_p{pos_mm}mm_v{vel_mm}mmyr"
-        except Exception:
-            pass
-        return ""
+        return datum_math.filter_tag(self._applied_filter,
+                                     getattr(self, "_filtered_episodes_info", None))
 
     def _filter_disp(self) -> str:
-        try:
-            if self.is_filtered():
-                p = self._applied_filter.pos_threshold_m
-                v = self._applied_filter.vel_threshold_m_per_y
-                return f" [filtered p={p:.3f} m, v={v:.3f} m/yr]" #
-        except Exception:
-            pass
-        return ""
+        return datum_math.filter_disp(self._applied_filter,
+                                      getattr(self, "_filtered_episodes_info", None))
 
     def _is_filtered_product(self, selection: str) -> bool:
         return self.is_filtered(selection)
@@ -2792,56 +2286,6 @@ class DatumWidget(QWidget):
         return PandasModel(dataframe, title)
 
 
-    def _format_cbar_correlation(self, ax):
-        # plot formatting
-        from matplotlib.ticker import FormatStrFormatter, MultipleLocator
-        if not ax.collections:
-            return
-        cbar = ax.collections[0].colorbar
-        if cbar is None:
-            return
-        decimals = int(getattr(self, "_legend_corr_decimals", 2))  # e.g., 2 -> 0.01
-        major_step = float(getattr(self, "_legend_corr_major_step", 0.2))  # e.g., 0.2
-        minor_div = int(getattr(self, "_legend_corr_minor_div", 2))  # e.g., 2 -> minor=0.1
-        cbar.set_label("Correlation coefficient r", rotation=90, labelpad=12)
-        ticks = np.arange(-1.0, 1.0 + 0.5 * major_step, major_step)
-        cbar.set_ticks(ticks)
-        cbar.formatter = FormatStrFormatter(f"%.{decimals}f")
-        if minor_div > 1:
-            minor_step = major_step / minor_div
-            cbar.ax.yaxis.set_minor_locator(MultipleLocator(minor_step))
-            cbar.ax.minorticks_on()
-        cbar.update_ticks()
-
-    def _format_cbar_sigma(self, ax):
-        from matplotlib.ticker import FormatStrFormatter, AutoMinorLocator
-        if not ax.collections:
-            return
-        cbar = ax.collections[0].colorbar
-        if cbar is None:
-            return
-
-        decimals = int(getattr(self, "_legend_sigma_decimals", 3))  # more suitable formatting
-        nbins = int(getattr(self, "_legend_sigma_nbins", 12))  
-        minor_div = int(getattr(self, "_legend_sigma_minor_div", 2)) 
-
-        # Label
-        cbar.set_label("Variance", rotation=90, labelpad=12)
-        # Get clim and place ticks including endpoints
-        mappable = ax.collections[0]
-        vmin, vmax = mappable.get_clim()
-        if vmin == vmax:
-            vmax = vmin + 1e-12  # avoid degenerate ticks
-        ticks = np.linspace(vmin, vmax, nbins)
-        cbar.set_ticks(ticks)
-        # Scientific notation with 'e'
-        cbar.formatter = FormatStrFormatter(f"%.{decimals}e")
-        # Minor ticks
-        if minor_div > 1:
-            cbar.ax.minorticks_on()
-            cbar.ax.yaxis.set_minor_locator(AutoMinorLocator(minor_div))
-        cbar.update_ticks()
-
     def plot_matrix_async(self):
         selection = self.matrix_display_combo.currentText()
 
@@ -2893,49 +2337,18 @@ class DatumWidget(QWidget):
                 subtitle = f"Shape: {matrix.shape}"
                 default_name = self._default_plot_filename(selection, ext="png")
                 self._render_helmert_bar(matrix, f"{title}{disp_tag}", subtitle, default_name)
-                fig = plt.gcf()
-                add_plot_footer(fig)
+                figures.add_footer(plt.gcf())
                 plt.show()
             else:
-                fig, ax = plt.subplots(figsize=(12, 10))
-                set_current_figure(self, fig)
-
-                if selection == "Cross Correlations (R)":
-                    sns.heatmap(
-                        matrix,
-                        ax=ax,
-                        cmap="RdBu_r",
-                        center=0,
-                        vmin=-1,
-                        vmax=1,
-                        square=True,
-                        cbar=True,
-                        cbar_kws={"label": "Correlation coefficient r"},
-                        xticklabels=labels[: matrix.shape[1]] if labels else "auto",
-                        yticklabels=labels[: matrix.shape[0]] if labels else "auto",
-                    )
-                    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
-                    ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
-                    self._format_cbar_correlation(ax)
-                elif selection == "Sigma Theta (Σ_θ)":
-                    sns.heatmap(
-                        matrix,
-                        ax=ax,
-                        cmap="inferno",
-                        square=True,
-                        cbar=True,
-                        cbar_kws={"label": "Variance"},
-                        xticklabels=labels[: matrix.shape[1]] if labels else "auto",
-                        yticklabels=labels[: matrix.shape[0]] if labels else "auto",
-                    )
-                    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
-                    ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
-                    self._format_cbar_sigma(ax)
-                else:
-                    sns.heatmap(matrix, ax=ax, cmap='viridis', annot=True, fmt='.2e', square=True)
-
                 disp_tag = self._filter_disp() if self._is_filtered_product(selection) else ""
-                ax.set_title(f"{title}{disp_tag}\nShape: {matrix.shape}")
+                if selection == "Cross Correlations (R)":
+                    kind = "correlation"
+                elif selection == "Sigma Theta (Σ_θ)":
+                    kind = "sigma"
+                else:
+                    kind = "plain"
+                fig, ax = figures.build_heatmap(matrix, kind, f"{title}{disp_tag}", labels)
+                set_current_figure(self, fig)
 
                 try:
                     default_name = self._default_plot_filename(selection, ext="png")
@@ -2947,7 +2360,7 @@ class DatumWidget(QWidget):
                     pass
 
                 plt.tight_layout()
-                add_plot_footer(fig)
+                figures.add_footer(fig)
                 plt.show()
 
             self._append_status("plot generated")
@@ -2958,126 +2371,16 @@ class DatumWidget(QWidget):
             QMessageBox.critical(self, "Plot Error", error_msg)
 
     def parse_station_coordinates(self, solution_estimate_data):
-
-        #take all station episodes (code, pt, soln) with complete STAX/STAY/STAZ
-        #
-        #  dict[label] -> {'code','pt','soln','x','y','z'}
-        #format: CODE.PT.SOLN (e.g., 'SODA.A.3'), or 'CODE.PT' if soln is None.
-
-        episodes = {}
-
-        for p in solution_estimate_data:
-            ptype = p.get("type", "")
-            code = p.get("code", "")
-            if ptype not in ("STAX", "STAY", "STAZ") or not code:
-                continue
-
-            pt = p.get("pt", "") or ""
-            soln = p.get("soln", None)
-            label = f"{code}.{pt}.{soln}" if soln is not None else f"{code}.{pt}"
-
-            ep = episodes.get(label)
-            if ep is None:
-                ep = {
-                    "code": code,
-                    "pt": pt,
-                    "soln": soln,
-                    "x": None,
-                    "y": None,
-                    "z": None,
-                }
-                episodes[label] = ep
-
-            v = p.get("value", 0.0)
-            if ptype == "STAX":
-                ep["x"] = v
-            elif ptype == "STAY":
-                ep["y"] = v
-            elif ptype == "STAZ":
-                ep["z"] = v
-
-        # keep only complete x,y,z
-        return {
-            label: meta
-            for label, meta in episodes.items()
-            if (meta["x"] is not None and meta["y"] is not None and meta["z"] is not None)
-        }
+        return datum_math.parse_station_coordinates(solution_estimate_data)
 
     def create_matrix_Ei(self, x, y, z):
-        #{1,0,0,x,0,z,-y}
-        #{0,1,0,y,-z,0,x}
-        #{0,0,1,z,y,-x,0}
-
-        matrix = np.zeros((3, 7))
-        matrix[0, 0] = 1
-        matrix[1, 1] = 1
-        matrix[2, 2] = 1
-
-        matrix[0, 3] = x
-        matrix[0, 5] = z
-        matrix[0, 6] = -y
-
-        matrix[1, 3] = y
-        matrix[1, 4] = -z
-        matrix[1, 6] = x
-
-        matrix[2, 3] = z
-        matrix[2, 4] = y
-        matrix[2, 5] = -x
-
-        return matrix
+        return datum_math.create_matrix_Ei(x, y, z)
 
     def _collect_indices(self, sol):
-        idx_map, coords, have_pos, have_vel = {}, {}, set(), set()
-        for i, p in enumerate(sol):
-            code, ptype = p.get("code"), p.get("type")
-            if not code or not ptype: continue
-            pt, soln = p.get("pt", ""), p.get("soln")
-            param_key = (code, ptype, pt, soln)
-            idx_map[param_key] = i
-            episode_key = (code, pt, soln)
-            if ptype in ("STAX", "STAY", "STAZ"):
-                have_pos.add(episode_key)
-                c = coords.setdefault(episode_key, {"x": None, "y": None, "z": None})
-                if ptype == "STAX": c["x"] = p.get("value", 0.0)
-                elif ptype == "STAY": c["y"] = p.get("value", 0.0)
-                elif ptype == "STAZ": c["z"] = p.get("value", 0.0)
-            if ptype in ("VELX", "VELY", "VELZ"):
-                have_vel.add(episode_key)
-        return idx_map, coords, have_pos, have_vel
+        return datum_math.collect_indices(sol)
 
     def build_E(self, sol, include_vel=True, exclude_episodes=None):
-        if exclude_episodes is None: exclude_episodes = set()
-        idx_map, coords, have_pos, have_vel = self._collect_indices(sol)
-        use_vel_cols = include_vel and len(have_vel - exclude_episodes) > 0
-        k = 14 if use_vel_cols else 7
-        rows, row_idx, used_episodes = [], [], 0
-        for episode in sorted(have_pos):
-            if episode in exclude_episodes: continue
-            c = coords.get(episode)
-            if not c or None in (c["x"], c["y"], c["z"]): continue
-            x, y, z = c["x"], c["y"], c["z"]
-            Ei = self.create_matrix_Ei(x, y, z)
-            code, pt, soln = episode
-            try:
-                ix, iy, iz = idx_map[(code, "STAX", pt, soln)], idx_map[(code, "STAY", pt, soln)], idx_map[(code, "STAZ", pt, soln)]
-            except KeyError: continue
-            if k == 7: rows.append(Ei)
-            else:
-                Ei_pos = np.zeros((3, 14)); Ei_pos[:, :7] = Ei
-                rows.append(Ei_pos)
-            row_idx.extend([ix, iy, iz])
-            used_episodes += 1
-            if k == 14 and episode in have_vel:
-                try:
-                    ivx, ivy, ivz = idx_map[(code, "VELX", pt, soln)], idx_map[(code, "VELY", pt, soln)], idx_map[(code, "VELZ", pt, soln)]
-                except KeyError: continue
-                Ei_vel = np.zeros((3, 14)); Ei_vel[:, 7:] = Ei
-                rows.append(Ei_vel)
-                row_idx.extend([ivx, ivy, ivz])
-        if not rows: return np.zeros((0, k)), np.zeros((0,), dtype=int), k, 0
-        E = np.vstack(rows)
-        return E, np.asarray(row_idx, int), k, used_episodes
+        return datum_math.build_E(sol, include_vel, exclude_episodes)
 
     def _capture_filter_settings(self) -> AppliedFilter:
         return AppliedFilter(
@@ -3142,151 +2445,7 @@ class DatumWidget(QWidget):
         self._applied_filter = applied
         self._update_filter_status()
 
-        # Check if manual filtering is enabled
-        if applied.manual_enabled:
-            # Manual mode: invert selection (selected = keep, all others = exclude)
-            all_episodes = set()
-            for p in sol:
-                ptype = p.get("type", "")
-                if ptype in ("STAX", "STAY", "STAZ", "VELX", "VELY", "VELZ"):
-                    episode = (p.get("code"), p.get("pt", ""), p.get("soln", ""))
-                    all_episodes.add(episode)
-            
-            episodes_to_exclude = all_episodes - applied.manual_episodes
-            self._append_status(
-                f"[Filter] Manual selection: {len(applied.manual_episodes)} included, "
-                f"{len(episodes_to_exclude)} excluded"
-            )
-            
-            # Build details for excluded episodes (for filtered stations dialog)
-            idx_map, coords, have_pos, have_vel = self._collect_indices(sol)
-            val_map = {
-                (p.get("code"), p.get("type"), p.get("pt", ""), p.get("soln")): p.get("value", np.nan)
-                for p in sol
-            }
-            
-            def _sd(i: Optional[int]) -> float:
-                if i is None:
-                    return float("nan")
-                v = float(Cx[i, i])
-                if v < 0.0:
-                    v = 0.0
-                return float(np.sqrt(v))
-            
-            details = []
-            for ep in sorted(episodes_to_exclude):
-                code, pt, soln = ep
-                ix = idx_map.get((code, "STAX", pt, soln))
-                iy = idx_map.get((code, "STAY", pt, soln))
-                iz = idx_map.get((code, "STAZ", pt, soln))
-                ivx = idx_map.get((code, "VELX", pt, soln))
-                ivy = idx_map.get((code, "VELY", pt, soln))
-                ivz = idx_map.get((code, "VELZ", pt, soln))
-                
-                sx, sy, sz = _sd(ix), _sd(iy), _sd(iz)
-                svx, svy, svz = _sd(ivx), _sd(ivy), _sd(ivz)
-                
-                x = val_map.get((code, "STAX", pt, soln), np.nan)
-                y = val_map.get((code, "STAY", pt, soln), np.nan)
-                z = val_map.get((code, "STAZ", pt, soln), np.nan)
-                vx = val_map.get((code, "VELX", pt, soln), np.nan)
-                vy = val_map.get((code, "VELY", pt, soln), np.nan)
-                vz = val_map.get((code, "VELZ", pt, soln), np.nan)
-                
-                details.append({
-                    "label": f"{code}.{pt}.{soln}",
-                    "code": code, "pt": pt, "soln": soln,
-                    "pos_excess": float("nan"),  # No sigma threshold in manual mode
-                    "vel_excess": float("nan"),
-                    "x": x, "y": y, "z": z,
-                    "vx": vx, "vy": vy, "vz": vz,
-                    "sx": sx, "sy": sy, "sz": sz,
-                    "svx": svx, "svy": svy, "svz": svz,
-                })
-        
-        #Combined filtering: Cx diag + STD_DEV column
-        elif applied.enabled:
-            pos_thresh = applied.pos_threshold_m  # m
-            vel_thresh = applied.vel_threshold_m_per_y  # m/yr
-
-            # Cx
-            episodes_cx, _ = self.detect_bad_episodes_cx(
-                sol=sol,
-                Cx=Cx,
-                pos_threshold_m=pos_thresh,
-                vel_threshold_m_per_y=vel_thresh,
-                include_vel=True,
-            )
-
-            # STD_DEV
-            pos_params = [p for p in sol if p.get("type") in ("STAX", "STAY", "STAZ")]
-            vel_params = [p for p in sol if p.get("type") in ("VELX", "VELY", "VELZ")]
-            episodes_sigma_pos = self.detect_bad_episodes(pos_params, threshold=pos_thresh)
-            episodes_sigma_vel = self.detect_bad_episodes(vel_params, threshold=vel_thresh)
-            # Union
-            episodes_to_exclude = set(episodes_cx) | set(episodes_sigma_pos) | set(episodes_sigma_vel)
-            # Prepare lookups for building details (parameter values and sigmas)
-            idx_map, coords, have_pos, have_vel = self._collect_indices(sol)
-            # values map
-            val_map = {
-                (p.get("code"), p.get("type"), p.get("pt", ""), p.get("soln")): p.get("value", np.nan)
-                for p in sol
-            }
-
-            def _sd(i: Optional[int]) -> float:
-                if i is None:
-                    return float("nan")
-                v = float(Cx[i, i])
-                if v < 0.0:
-                    v = 0.0
-                return float(np.sqrt(v))
-
-            details = []
-            for ep in sorted(episodes_to_exclude):
-                code, pt, soln = ep
-                # sigma (from Cx)
-                ix = idx_map.get((code, "STAX", pt, soln))
-                iy = idx_map.get((code, "STAY", pt, soln))
-                iz = idx_map.get((code, "STAZ", pt, soln))
-                ivx = idx_map.get((code, "VELX", pt, soln))
-                ivy = idx_map.get((code, "VELY", pt, soln))
-                ivz = idx_map.get((code, "VELZ", pt, soln))
-
-                sx, sy, sz = _sd(ix), _sd(iy), _sd(iz)
-                svx, svy, svz = _sd(ivx), _sd(ivy), _sd(ivz)
-                pos_max = np.nanmax([sx, sy, sz]) if not np.isnan([sx, sy, sz]).all() else float("nan")
-                vel_max = np.nanmax([svx, svy, svz]) if not np.isnan([svx, svy, svz]).all() else float("nan")
-                pos_excess = max(0.0, pos_max - pos_thresh) if np.isfinite(pos_max) else float("nan")
-                vel_excess = max(0.0, vel_max - vel_thresh) if np.isfinite(vel_max) else float("nan")
-
-                # parameter values from SOLUTION/ESTIMATE
-                x = val_map.get((code, "STAX", pt, soln), np.nan)
-                y = val_map.get((code, "STAY", pt, soln), np.nan)
-                z = val_map.get((code, "STAZ", pt, soln), np.nan)
-                vx = val_map.get((code, "VELX", pt, soln), np.nan)
-                vy = val_map.get((code, "VELY", pt, soln), np.nan)
-                vz = val_map.get((code, "VELZ", pt, soln), np.nan)
-
-                details.append(
-                    {
-                        "label": f"{code}.{pt}.{soln}",
-                        "code": code,
-                        "pt": pt,
-                        "soln": soln,
-                        # excesses
-                        "pos_excess": pos_excess,
-                        "vel_excess": vel_excess,
-                        # values (sol block estimate)
-                        "x": x, "y": y, "z": z,
-                        "vx": vx, "vy": vy, "vz": vz,
-                        # sigmas (from Cx)
-                        "sx": sx, "sy": sy, "sz": sz,
-                        "svx": svx, "svy": svy, "svz": svz,
-                    }
-                )
-        else:
-            episodes_to_exclude, details = set(), []
-            self._append_status("[Filter] filtering disabled")
+        episodes_to_exclude, details = datum_math.select_excluded_episodes(sol, Cx, applied)
 
         self._filtered_episodes_info = details
         self.show_filtered_btn.setEnabled(len(self._filtered_episodes_info) > 0)
@@ -3301,119 +2460,37 @@ class DatumWidget(QWidget):
         except Exception:
             pass
 
-        # Create boolean mask: True = keep parameter, False = exclude parameter
-        # Filters out STAX/STAY/STAZ (and optionally VELX/VELY/VELZ) for flagged episodes
-        keep_mask = self._build_keep_mask(
-            sol=sol, episodes_to_exclude=episodes_to_exclude, remove_vel=False
-        )
-        if keep_mask.sum() == 0:
-            QMessageBox.warning(
-                self, "Data Error", "All parameters were filtered out. Adjust thresholds."
-            )
-            return
-
-
-        if keep_mask.all():
-            filtered_sol = sol
-            filtered_Cx = Cx
-        else:
-            filtered_sol = [p for p, k in zip(sol, keep_mask) if k]
-            filtered_Cx = Cx[np.ix_(keep_mask, keep_mask)]
-
-
-        # filtered_sol = [p for p, k in zip(sol, keep_mask) if k] removed with v1.1
-        # filtered_Cx = Cx[np.ix_(keep_mask, keep_mask)] removed with v1.1
-
-
-        # Build transformation matrix E from filtered data: maps station episodes to Helmert parameters
-        # row_idx identifies which rows/cols of filtered_Cx correspond to used station coordinates
-        E, row_idx, kdim, n_episodes = self.build_E(
-            filtered_sol, include_vel=True, exclude_episodes=None
-        )
-        if E.size == 0:
-            QMessageBox.warning(
-                self, "Data Error", "No stations remained after filtering."
-            )
-            return
-        # Extract covariance submatrix for coordinates actually used in Helmert transformation
-
-        if row_idx.size == filtered_Cx.shape[0] and np.array_equal(
-                row_idx, np.arange(filtered_Cx.shape[0])):
-            Cx_sub = filtered_Cx
-        else:
-            Cx_sub = filtered_Cx[np.ix_(row_idx, row_idx)]
-
-        # Cx_sub = filtered_Cx[np.ix_(row_idx, row_idx)] removed with v1.1
-
-        self._append_status(f"[Filter] episodes used after filtering: {n_episodes}")
-        self._append_status(f"E shape: {E.shape}, Cx_sub shape: {Cx_sub.shape}")
-
         try:
-            At = E.T
-            AtA = At @ E
-            self._append_status(f"cond(E^T E): {np.linalg.cond(AtA):.2e}")
-            #print(At)
-            #print("---------")
-            #print(AtA)
-            #print("---------")
-            #print(E)
-            AtCxA = (At @ Cx_sub) @ E
-
-            # inv does not raise on a singular E^T E. Columns are scaled to unit norm
-            # first because their units differ and that alone breaks matrix_rank.
-            col_norms = np.linalg.norm(E, axis=0)
-            col_norms[col_norms == 0.0] = 1.0
-            rank = np.linalg.matrix_rank(E / col_norms)
-            if rank < E.shape[1]:
-                message = f"The design matrix E has column rank {rank} of {E.shape[1]}, so E^T E cannot be inverted. Sigma Theta was not computed."
-                self._append_status(f"ERROR: {message}")
-                logger.error(message)
-                QMessageBox.critical(self, "Rank deficient design matrix", message)
-                return
-
-            AtA_inv = np.linalg.inv(AtA) 
-            #AtA_pinv = np.linalg.pinv(AtA)#pseudo
-            sigma_theta = (AtA_inv @ AtCxA) @ AtA_inv
-            #sigma_theta_pinv = (AtA_pinv @ AtCxA) @ AtA_pinv
-            self._append_status(f"cond(sigma_theta): {np.linalg.cond(sigma_theta):.2e}")
-            #if 
-           
-            self.sigma_theta_matrix = sigma_theta
-
-            self.filtered_solution_estimate = filtered_sol
-
-            # self.filtered_Cx = filtered_Cx obsolete and left substantial memory footprint - removed with v1.1
-            self.filtered_row_idx = row_idx
-
-            diag = np.diag(sigma_theta)
-            self._append_status(
-                f"Σθ diag stats: min={diag.min():.6e}, max={diag.max():.6e}, mean={diag.mean():.6e}"
-            )
-
-            negative = int(np.count_nonzero(diag < 0.0))
-            if negative:
-                self._append_status(f"WARNING: {negative} of {diag.size} Σθ diagonal entries are negative, the solution is degenerate and Helmert parameters will be NaN")
-
-            self.cross_corr_btn.setEnabled(True)
-            self.export_btn.setEnabled(True)
-            self.plot_btn.setEnabled(True)
-            self.helmert_btn.setEnabled(True)
-            benchmark.end(sigma_bench)
-            self._update_stats_button()
-            self._refresh_matrix_inspector_if_open()
-
-            QMessageBox.information(
-                self,
-                "Success",
-                f"SigmaTheta computed (filtered): "
-                f"{sigma_theta.shape[0]}×{sigma_theta.shape[1]}",
-            )
-
+            result = datum_math.sigma_theta_from_covariance(sol, Cx, episodes_to_exclude)
+        except datum_math.DatumError as exc:
+            QMessageBox.warning(self, "Data Error", str(exc))
+            return
         except np.linalg.LinAlgError as e:
             benchmark.cancel(sigma_bench)
             self._clear_computed_products()
             logger.exception("SigmaTheta computation error")
             QMessageBox.critical(self, "Calculation Error", str(e))
+            return
+
+        sigma_theta = result.sigma_theta
+        self.sigma_theta_matrix = sigma_theta
+        self.filtered_solution_estimate = result.filtered_sol
+        self.filtered_row_idx = result.row_idx
+
+        self.cross_corr_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
+        self.plot_btn.setEnabled(True)
+        self.helmert_btn.setEnabled(True)
+        benchmark.end(sigma_bench)
+        self._update_stats_button()
+        self._refresh_matrix_inspector_if_open()
+
+        QMessageBox.information(
+            self,
+            "Success",
+            f"SigmaTheta computed (filtered): "
+            f"{sigma_theta.shape[0]}×{sigma_theta.shape[1]}",
+        )
 
     def export_data(self):
         selection = self.matrix_display_combo.currentText()
@@ -3436,13 +2513,7 @@ class DatumWidget(QWidget):
             QMessageBox.warning(self, "Export Error", "Selected data not available")
             return
 
-        extensions = {
-            'Excel (.xlsx)': '.xlsx',
-            'CSV (.csv)': '.csv',
-            'Text (.txt)': '.txt',
-            'NumPy (.npy)': '.npy'
-        }
-        extension = extensions.get(format_str, '.txt')
+        extension = export.FORMAT_EXTENSIONS.get(format_str, '.txt')
         parent_app = self.window()
         original_file = parent_app.current_data['metadata'].get('filename', '')
         filter_suffix = self._filter_tag() if self.is_filtered(selection) else ""
@@ -3456,15 +2527,7 @@ class DatumWidget(QWidget):
         remember_dialog_dir(out_file)
         out_file = ensure_suffix(out_file, extension)
         try:
-            if extension == '.xlsx':
-                df = pd.DataFrame(matrix)
-                df.to_excel(out_file, index=False, header=False)
-            elif extension == '.csv':
-                np.savetxt(out_file, matrix, delimiter=',', fmt='%.17g')
-            elif extension == '.txt':
-                np.savetxt(out_file, matrix, fmt='%.17g')
-            elif extension == '.npy':
-                np.save(out_file, matrix)
+            export.write_datum_matrix(matrix, out_file, extension)
 
             self._append_status(f"exported {selection} to {out_file}")
 
@@ -3473,123 +2536,21 @@ class DatumWidget(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to export matrix: {e}")
 
     def _build_stats_report(self) -> str:
-        # plain text report -> collect metrics already computed by the pipeline
         parent_app = self.window()
-        lines = []
-        add = lines.append
-
-        add("SINEX TRF Studio - Datum Effect Statistics Report")
-        add("=" * 52)
-
         filename = ""
         if hasattr(parent_app, "current_data") and parent_app.current_data:
             filename = parent_app.current_data.get("metadata", {}).get("filename", "")
-        add(f"File: {filename}")
-
         var_factor = None
         if hasattr(parent_app, "get_variance_factor"):
             var_factor = parent_app.get_variance_factor()
-        add(f"Variance factor: {var_factor if var_factor is not None else 'n/a'}")
-        add(f"Filter tag: {self._filter_tag() or 'none'}")
-        add("")
-
-        #SigmaTheta stats
-        st = self.sigma_theta_matrix
-        add("Sigma Theta (Σθ)")
-        add("-" * 52)
-        if st is not None:
-            diag = np.diag(st)
-            add(f"  shape: {st.shape[0]}x{st.shape[1]}")
-            add(f"  diag min: {diag.min():.6e}")
-            add(f"  diag max: {diag.max():.6e}")
-            add(f"  diag mean: {diag.mean():.6e}")
-            add(f"  cond(Σθ): {np.linalg.cond(st):.6e}")
-            sym_err = float(np.max(np.abs(st - st.T)))
-            add(f"  symmetry max|Σθ - Σθ^T|: {sym_err:.6e}")
-        else:
-            add("  not computed")
-        add("")
-
-        # cross-corr
-        add("Cross Correlations (R)")
-        add("-" * 52)
-        cc = self.cross_correlation_matrix
-        if cc is not None:
-            n = cc.shape[0]
-            off = cc[~np.eye(n, dtype=bool)]
-            add(f"  shape: {n}x{n}")
-            add(f"  off-diagonal min: {off.min():.6f}")
-            add(f"  off-diagonal max: {off.max():.6f}")
-            add(f"  mean |off-diagonal|: {np.mean(np.abs(off)):.6f}")
-            add(f"  cond(R): {np.linalg.cond(cc):.6e}")
-            sym_err = float(np.max(np.abs(cc - cc.T)))
-            add(f"  symmetry max|R - R^T|: {sym_err:.6e}")
-        else:
-            add("  not computed")
-        add("")
-
-        # Helmert 
-        add("Helmert Parameters")
-        add("-" * 52)
-        hp = self.helmert_params
-        if hp is not None:
-            flat = np.asarray(hp, dtype=float).flatten()
-            if flat.size == 7:
-                names = ["tx", "ty", "tz", "ds", "ex", "ey", "ez"]
-            elif flat.size == 14:
-                names = ["tx", "ty", "tz", "ds", "ex", "ey", "ez",
-                         "tx_v", "ty_v", "tz_v", "ds_v", "ex_v", "ey_v", "ez_v"]
-            else:
-                names = [f"p{i + 1}" for i in range(flat.size)]
-            for name, val in zip(names, flat):
-                add(f"  {name}: {val:.6e}")
-        else:
-            add("  not computed")
-        add("")
-        add("Station Metrics")
-        add("-" * 52)
         sol = None
         if hasattr(parent_app, "current_data") and parent_app.current_data:
             sol = parent_app.current_data["blocks"].get("SOLUTION/ESTIMATE")
-        if sol:
-            episodes = self.parse_station_coordinates(sol)
-            add(f"  station episodes with complete xyz: {len(episodes)}")
-            add(f"  total estimated parameters: {len(sol)}")
-            add("")
-
-            add("  (σ) of the estimates, different units ")
-            add("")
-            add(f"    {'Type':8} {'Unit':10} {'Count':>7} {'Zero':>7} "
-                f"{'Min':>13} {'Max':>13} {'Mean':>13}")
-            by_type = {}
-            for p in sol:
-                key = (str(p.get("type", "")), str(p.get("unit", "")))
-                by_type.setdefault(key, []).append(p.get("sigma", np.nan))
-            for ptype, unit in sorted(by_type):
-                vals = np.asarray(by_type[(ptype, unit)], dtype=float)
-                finite = vals[np.isfinite(vals)]
-                n_zero = int(np.count_nonzero(finite == 0.0))
-                usable = finite[finite > 0.0]
-                if usable.size:
-                    stats = (f"{usable.min():13.6e} {usable.max():13.6e} "
-                             f"{usable.mean():13.6e}")
-                else:
-                    stats = f"{'n/a':>13} {'n/a':>13} {'n/a':>13}"
-                add(f"    {ptype:8} {unit:10} {finite.size:7d} {n_zero:7d} {stats}")
-            add("")
-            add("  0 = absent or unparseable value - not included in the min, max, and mean")
-            add(" ")
-
-        else:
-            add("  no SOLUTION/ESTIMATE data")
-        add("")
-        add("Filtering")
-        add("-" * 52)
-        info = getattr(self, "_filtered_episodes_info", []) or []
-        add(f"  episodes excluded by filter: {len(info)}")
-        add(f"  filtering active: {self.is_filtered()}")
-
-        return "\n".join(lines) + "\n"
+        return reporting.build_stats_report(
+            filename, var_factor, self._filter_tag(), self.sigma_theta_matrix,
+            self.cross_correlation_matrix, self.helmert_params, sol,
+            getattr(self, "_filtered_episodes_info", []), self.is_filtered(),
+        )
 
     def export_stats_report(self):
         if (

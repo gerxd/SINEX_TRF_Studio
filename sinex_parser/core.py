@@ -1,5 +1,7 @@
 # core.py
 import logging
+import logging.handlers
+import sys
 import numpy as np
 from pathlib import Path
 
@@ -17,17 +19,62 @@ class ColoredFormatter(logging.Formatter):
         return formatted
 
 
-file_handler = logging.FileHandler('sinex_parser.log')
+try:
+    sys.stderr.reconfigure(errors='replace')
+except Exception:
+    pass
+
+LOG_FILENAME = 'sinex_parser.log'
+
+
+def _make_file_handler(path, max_bytes=0):
+    handler = logging.handlers.RotatingFileHandler(
+        path, maxBytes=int(max_bytes), backupCount=1, delay=True, encoding='utf-8')
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    return handler
+
+
+file_handler = _make_file_handler(LOG_FILENAME)
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(ColoredFormatter('%(asctime)s - %(levelname)s - %(message)s'))
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[file_handler, console_handler]
-)
 
 logger = logging.getLogger(__name__)
-logging.getLogger('matplotlib.font_manager').setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+logger.propagate = False
+
+
+def log_file_path():
+    return Path(file_handler.baseFilename)
+
+
+def file_logging_enabled():
+    return file_handler in logger.handlers
+
+
+def set_file_logging(enabled):
+    if enabled and not file_logging_enabled():
+        logger.addHandler(file_handler)
+    elif not enabled and file_logging_enabled():
+        logger.removeHandler(file_handler)
+
+
+def set_log_file(path, max_bytes=0):
+    global file_handler
+    was_on = file_logging_enabled()
+    logger.removeHandler(file_handler)
+    file_handler.close()
+    file_handler = _make_file_handler(path, max_bytes)
+    if was_on:
+        logger.addHandler(file_handler)
+
+
+def clear_log_file():
+    path = log_file_path()
+    file_handler.close()
+    if path.exists():
+        path.write_text('', encoding='utf-8')
 
 ###############################################################################
 # 2) Benchmarks
@@ -280,10 +327,54 @@ def remember_dialog_dir(path: str) -> None:
 
 
 def default_save_path(default_name: str) -> str:
-    directory = get_dialog_dir()
+    directory = default_export_dir() or get_dialog_dir()
     if directory:
         return _os.path.join(directory, default_name)
     return default_name
+
+
+DEFAULT_EXPORT_FORMAT = 'NumPy (.npy)'
+
+
+def default_export_format():
+    return str(get_app_setting('export/format', DEFAULT_EXPORT_FORMAT) or DEFAULT_EXPORT_FORMAT)
+
+
+def default_export_dir():
+    return str(get_app_setting('export/dir', '') or '')
+
+
+def figure_dpi():
+    try:
+        return int(get_app_setting('figures/dpi', 150) or 150)
+    except (TypeError, ValueError):
+        return 150
+
+
+def default_pos_threshold():
+    try:
+        return float(get_app_setting('filter/pos_threshold', 0.050) or 0.050)
+    except (TypeError, ValueError):
+        return 0.050
+
+
+def default_vel_threshold():
+    try:
+        return float(get_app_setting('filter/vel_threshold', 0.003) or 0.003)
+    except (TypeError, ValueError):
+        return 0.003
+
+
+def default_skip_validation():
+    return get_app_setting('parse/skip_validation', True) not in (False, 'false')
+
+
+def default_skip_epochs():
+    return get_app_setting('parse/skip_epochs', True) not in (False, 'false')
+
+
+def set_console_level(level):
+    console_handler.setLevel(level)
 
 
 def ensure_suffix(path: str, suffix: str) -> str:

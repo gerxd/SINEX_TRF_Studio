@@ -1,11 +1,10 @@
-# parsers/parsers.py
+# io/parsers.py
 from abc import ABC, abstractmethod
 import re
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from plyer import notification
 from ..core import logger
 
 ###############################################################################
@@ -277,8 +276,14 @@ class SolutionStatisticsParser(SinexBlockParser):
         return found
 
     def export(self, data: float, filename: Path, format: str):
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(f"VARIANCE FACTOR: {data}\n")
+        if format == 'xlsx':
+            pd.DataFrame([[float(data)]], index=['VARIANCE FACTOR']).to_excel(
+                filename, header=False)
+        elif format == 'npy':
+            np.save(filename, np.array(float(data)))
+        else:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"VARIANCE FACTOR: {data}\n")
         logger.info(f"Exported variance factor => {filename}")
 
 class ParameterParser(SinexBlockParser):

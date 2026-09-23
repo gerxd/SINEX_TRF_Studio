@@ -20,6 +20,34 @@ uv run main.py
 
 A public example dataset is provided at `examples/BKG08457.SNX`.
 
+## Command line
+
+Every analysis the window performs is also available without it. The command line
+imports no Qt at all, so it runs on a machine with no display.
+
+```bash
+python -m sinex_parser.cli parse FILE.SNX
+python -m sinex_parser.cli datum FILE.SNX --out results/ --formats csv,xlsx,npy
+python -m sinex_parser.cli normal FILE.SNX --variance-factor 1.0 --out results/
+```
+
+`datum` writes sigma theta, the cross correlations, the Helmert parameters and a
+statistics report, using the same file names the window would use. Add `--plots`
+to save the figures as png. Filtering thresholds are `--pos-threshold` in metres
+and `--vel-threshold` in metres per year, and `--no-filter` uses every episode.
+
+`normal` needs `--variance-factor` for any file with no `SOLUTION/STATISTICS`
+block, which includes every real ITRF file. It writes the normal matrix, the u
+vector and the apriori covariance, and prints the recomputation check. Rank is an
+SVD and costs O(n^3), so it runs only with `--rank`.
+
+For the same inputs the command line writes byte identical files to the window.
+The command line is complementary to the window, not a replacement, and nothing
+was taken out of the window to build it.
+
+`docs/CLI_GUIDE.md` documents every command and flag, the output naming rules,
+the format precision table and the exit codes.
+
 ## Core Capabilities
 
 - Import `.sinex` and `.snx` files.
@@ -54,6 +82,16 @@ The User Interface is split between tabs, each for a specific workflow:
 - For full precision, use `.npy` as it uses the raw float64 values.`.csv` and `.txt` are also at full float64 precision. `.xlsx` stores 16 digits.
 
 
+
+## Layout
+
+| Path | Holds |
+|---|---|
+| `sinex_parser/analysis/` | every computed value, no Qt |
+| `sinex_parser/io/` | parsing, the parse loop, export formats, figures |
+| `sinex_parser/ui/` | widgets, dialogs and window state |
+| `sinex_parser/cli.py` | the command line |
+| `sinex_parser/core.py` | logging, benchmarking, matrix helpers |
 
 ## License and Citation
 

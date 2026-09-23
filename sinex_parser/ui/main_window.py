@@ -1,4 +1,5 @@
 # ui/main_window.py
+import logging
 import os
 
 from PyQt6.QtGui import QFont, QAction, QActionGroup
@@ -20,9 +21,13 @@ from ..core import (
     logger, SinexFileValidator, benchmark,
     remember_dialog_dir, default_save_path, ensure_suffix,
     get_app_setting, set_app_setting,
+    LOG_FILENAME, log_file_path, set_file_logging, set_log_file, clear_log_file,
+    default_export_format, default_export_dir, default_skip_validation,
+    default_skip_epochs, figure_dpi, set_console_level,
 )
 
-from ..parsers import create_parsers
+from ..io import create_parsers
+from ..io import export
 from ..ui.widgets import (
     ParserWorker, CovarianceMatrixWidget, StationsWidget,
     InfoWidget, DatumWidget, FileInfoWidget, QPlainTextEditLogger
@@ -43,6 +48,15 @@ class SINEXParserApp(QMainWindow):
         self._theme = get_app_setting('ui/theme', 'light') or 'light'
         self._log_visible = get_app_setting('ui/log_visible', True) not in (False, 'false')
         self._remember_geometry = get_app_setting('ui/remember_geometry', False) in (True, 'true')
+        self._notifications = get_app_setting('ui/notifications', True) not in (False, 'false')
+        self._log_enabled = get_app_setting('log/enabled', True) not in (False, 'false')
+        self._log_max_bytes = int(get_app_setting('log/max_bytes', 0) or 0)
+        self._log_dir = str(get_app_setting('log/dir', '') or '')
+        self._console_level = int(get_app_setting('log/console_level', logging.WARNING)
+                                  or logging.WARNING)
+        self._remember_filter = get_app_setting('filter/remember', False) in (True, 'true')
+        self._apply_log_settings()
+        set_console_level(self._console_level)
         self._apply_theme(self._theme)
         self.init_ui()
         self.benchmark_updated.connect(self._refresh_benchmark_button)
@@ -130,7 +144,7 @@ class SINEXParserApp(QMainWindow):
         controls_layout.addLayout(benchmark_row)
 
         self.skip_validation = QCheckBox("Skip file validation")
-        self.skip_validation.setChecked(True)
+        self.skip_validation.setChecked(default_skip_validation())
         self.skip_validation.setToolTip(
             "When enabled, the parser skips the block-structure validation pass\n"
             "before parsing. Saves time on large files from trusted sources."
@@ -139,7 +153,7 @@ class SINEXParserApp(QMainWindow):
         controls_layout.addWidget(self.skip_validation)
 
         self.skip_epoch = QCheckBox("Skip parsing SOLUTION/EPOCHS")
-        self.skip_epoch.setChecked(True)
+        self.skip_epoch.setChecked(default_skip_epochs())
         self.skip_epoch.setToolTip(
             "When enabled, the parser will ignore the SOLUTION/EPOCHS block\n"
             "to speed up parsing for very large files."
@@ -221,6 +235,7 @@ class SINEXParserApp(QMainWindow):
         export_line = QHBoxLayout()
         self.format_combo = QComboBox()
         self.format_combo.addItems(['Excel (.xlsx)', 'CSV (.csv)', 'Text (.txt)', 'NumPy (.npy)'])
+        self.format_combo.setCurrentText(default_export_format())
         export_line.addWidget(QLabel("Export Format:"))
         export_line.addWidget(self.format_combo)
         self.export_button = QPushButton("Export Data")
@@ -278,6 +293,114 @@ class SINEXParserApp(QMainWindow):
         self._geometry_action.triggered.connect(self._toggle_remember_geometry)
         settings_menu.addAction(self._geometry_action)
 
+        self._notify_action = QAction('Desktop notifications', self, checkable=True)
+        self._notify_action.setChecked(self._notifications)
+        self._notify_action.triggered.connect(self._toggle_notifications)
+        settings_menu.addAction(self._notify_action)
+
+        settings_menu.addSeparator()
+
+        export_menu = settings_menu.addMenu('Export defaults')
+
+        format_menu = export_menu.addMenu('Format')
+        self._format_group = QActionGroup(self)
+        self._format_group.setExclusive(True)
+        current_format = default_export_format()
+        for label in ('NumPy (.npy)', 'CSV (.csv)', 'Text (.txt)', 'Excel (.xlsx)'):
+            act = QAction(label, self, checkable=True)
+            act.setChecked(label == current_format)
+            act.triggered.connect(lambda _checked, f=label: self._set_export_format(f))
+            self._format_group.addAction(act)
+            format_menu.addAction(act)
+
+        self._export_dir_action = QAction('', self)
+        self._export_dir_action.setEnabled(False)
+        export_menu.addAction(self._export_dir_action)
+
+        choose_export = QAction('Choose folder...', self)
+        choose_export.triggered.connect(self._choose_export_dir)
+        export_menu.addAction(choose_export)
+
+        clear_export = QAction('Use the last used folder', self)
+        clear_export.triggered.connect(self._clear_export_dir)
+        export_menu.addAction(clear_export)
+
+        dpi_menu = export_menu.addMenu('Figure dpi')
+        self._dpi_group = QActionGroup(self)
+        self._dpi_group.setExclusive(True)
+        current_dpi = figure_dpi()
+        for dpi in (100, 150, 200, 300):
+            act = QAction(str(dpi), self, checkable=True)
+            act.setChecked(dpi == current_dpi)
+            act.triggered.connect(lambda _checked, d=dpi: self._set_figure_dpi(d))
+            self._dpi_group.addAction(act)
+            dpi_menu.addAction(act)
+
+        parse_menu = settings_menu.addMenu('Parsing defaults')
+
+        self._skip_validation_action = QAction('Skip file validation', self, checkable=True)
+        self._skip_validation_action.setChecked(default_skip_validation())
+        self._skip_validation_action.triggered.connect(
+            lambda checked: self._set_parse_default('parse/skip_validation', checked))
+        parse_menu.addAction(self._skip_validation_action)
+
+        self._skip_epochs_action = QAction('Skip parsing SOLUTION/EPOCHS', self, checkable=True)
+        self._skip_epochs_action.setChecked(default_skip_epochs())
+        self._skip_epochs_action.triggered.connect(
+            lambda checked: self._set_parse_default('parse/skip_epochs', checked))
+        parse_menu.addAction(self._skip_epochs_action)
+
+        self._remember_filter_action = QAction('Remember filter thresholds', self, checkable=True)
+        self._remember_filter_action.setChecked(self._remember_filter)
+        self._remember_filter_action.triggered.connect(self._toggle_remember_filter)
+        parse_menu.addAction(self._remember_filter_action)
+
+        settings_menu.addSeparator()
+
+        log_menu = settings_menu.addMenu('Log file')
+
+        self._log_file_action = QAction('Write log file', self, checkable=True)
+        self._log_file_action.setChecked(self._log_enabled)
+        self._log_file_action.triggered.connect(self._toggle_log_file)
+        log_menu.addAction(self._log_file_action)
+
+        self._log_path_action = QAction('', self)
+        self._log_path_action.setEnabled(False)
+        log_menu.addAction(self._log_path_action)
+
+        cap_menu = log_menu.addMenu('Size limit')
+        self._log_cap_group = QActionGroup(self)
+        self._log_cap_group.setExclusive(True)
+        for label, size in (('No limit', 0), ('1 MB', 1 << 20),
+                            ('10 MB', 10 << 20), ('50 MB', 50 << 20)):
+            act = QAction(label, self, checkable=True)
+            act.setChecked(size == self._log_max_bytes)
+            act.triggered.connect(lambda _checked, s=size: self._set_log_cap(s))
+            self._log_cap_group.addAction(act)
+            cap_menu.addAction(act)
+
+        choose_action = QAction('Choose folder...', self)
+        choose_action.triggered.connect(self._choose_log_dir)
+        log_menu.addAction(choose_action)
+
+        clear_action = QAction('Clear log file', self)
+        clear_action.triggered.connect(self._clear_log_file)
+        log_menu.addAction(clear_action)
+
+        console_menu = log_menu.addMenu('Console level')
+        self._console_group = QActionGroup(self)
+        self._console_group.setExclusive(True)
+        for label, level in (('Warnings', logging.WARNING), ('Info', logging.INFO),
+                             ('Debug', logging.DEBUG)):
+            act = QAction(label, self, checkable=True)
+            act.setChecked(level == self._console_level)
+            act.triggered.connect(lambda _checked, lv=level: self._set_console_level(lv))
+            self._console_group.addAction(act)
+            console_menu.addAction(act)
+
+        self._refresh_log_path_action()
+        self._refresh_export_dir_action()
+
     def _apply_theme(self, name: str, store: bool = False):
         scheme = {
             'light': QtCore.Qt.ColorScheme.Light,
@@ -320,6 +443,115 @@ class SINEXParserApp(QMainWindow):
     def _toggle_remember_geometry(self, checked: bool):
         self._remember_geometry = bool(checked)
         set_app_setting('ui/remember_geometry', self._remember_geometry)
+
+    def _toggle_notifications(self, checked: bool):
+        self._notifications = bool(checked)
+        set_app_setting('ui/notifications', self._notifications)
+
+    def _notify(self, message: str):
+        if not self._notifications:
+            return
+        try:
+            notification.notify(title="SINEX Studio", message=message)
+        except Exception:
+            logger.debug("desktop notification failed", exc_info=True)
+
+    def _set_export_format(self, name: str):
+        set_app_setting('export/format', name)
+        for widget in (self.operations_widget, self.datum_widget):
+            combo = getattr(widget, 'format_combo', None)
+            if combo is not None:
+                combo.setCurrentText(name)
+        self.format_combo.setCurrentText(name)
+
+    def _refresh_export_dir_action(self):
+        directory = default_export_dir()
+        text = directory or 'the last used folder'
+        self._export_dir_action.setToolTip(text)
+        self._export_dir_action.setText(text if len(text) <= 60 else '...' + text[-57:])
+
+    def _choose_export_dir(self):
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Choose export folder", default_export_dir())
+        if not chosen:
+            return
+        set_app_setting('export/dir', chosen)
+        self._refresh_export_dir_action()
+
+    def _clear_export_dir(self):
+        set_app_setting('export/dir', '')
+        self._refresh_export_dir_action()
+
+    def _set_figure_dpi(self, dpi: int):
+        set_app_setting('figures/dpi', int(dpi))
+
+    def _set_parse_default(self, key: str, checked: bool):
+        set_app_setting(key, bool(checked))
+        if key == 'parse/skip_validation':
+            self.skip_validation.setChecked(bool(checked))
+        else:
+            self.skip_epoch.setChecked(bool(checked))
+
+    def _toggle_remember_filter(self, checked: bool):
+        self._remember_filter = bool(checked)
+        set_app_setting('filter/remember', self._remember_filter)
+        if self._remember_filter:
+            self.remember_filter_thresholds()
+
+    def remember_filter_thresholds(self):
+        if not self._remember_filter:
+            return
+        widget = getattr(self, 'datum_widget', None)
+        if widget is None:
+            return
+        set_app_setting('filter/pos_threshold', float(widget._pos_threshold_m))
+        set_app_setting('filter/vel_threshold', float(widget._vel_threshold_m_per_y))
+
+    def _set_console_level(self, level: int):
+        self._console_level = int(level)
+        set_console_level(self._console_level)
+        set_app_setting('log/console_level', self._console_level)
+
+    def _apply_log_settings(self):
+        if self._log_dir:
+            set_log_file(str(Path(self._log_dir) / LOG_FILENAME), self._log_max_bytes)
+        else:
+            set_log_file(LOG_FILENAME, self._log_max_bytes)
+        set_file_logging(self._log_enabled)
+
+    def _refresh_log_path_action(self):
+        path = str(log_file_path())
+        self._log_path_action.setToolTip(path)
+        self._log_path_action.setText(path if len(path) <= 60 else '...' + path[-57:])
+
+    def _toggle_log_file(self, checked: bool):
+        self._log_enabled = bool(checked)
+        set_file_logging(self._log_enabled)
+        set_app_setting('log/enabled', self._log_enabled)
+
+    def _set_log_cap(self, max_bytes: int):
+        self._log_max_bytes = int(max_bytes)
+        set_app_setting('log/max_bytes', self._log_max_bytes)
+        self._apply_log_settings()
+        self._refresh_log_path_action()
+
+    def _choose_log_dir(self):
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Choose log folder", str(log_file_path().parent))
+        if not chosen:
+            return
+        self._log_dir = chosen
+        set_app_setting('log/dir', self._log_dir)
+        self._apply_log_settings()
+        self._refresh_log_path_action()
+
+    def _clear_log_file(self):
+        try:
+            clear_log_file()
+        except OSError as exc:
+            QMessageBox.warning(self, "Log file", f"Could not clear the log file: {exc}")
+            return
+        QMessageBox.information(self, "Log file", "Log file cleared.")
 
     def closeEvent(self, event):
         if self._remember_geometry:
@@ -457,12 +689,10 @@ class SINEXParserApp(QMainWindow):
             # clear stations left over from any previous file
             self.stations_widget.set_data([])
         # Update the raw export display.
+        self._refresh_block_combo()
         self.update_block_display()
         QMessageBox.information(self, "Success", "SINEX file parsed successfully!")
-        notification.notify(
-            title="SINEX Studio",
-            message="SINEX file parsed successfully!"
-        )
+        self._notify("SINEX file parsed successfully!")
 
     def handle_parsing_error(self, err):
         worker = self.sender()
@@ -542,12 +772,7 @@ class SINEXParserApp(QMainWindow):
 
     def operations_export_handler(self, arr: np.ndarray, format_str: str, prefix: str):
         logger.info(f"Operations export: {prefix} as {format_str}")
-        filters = {
-            'Excel (.xlsx)': ('Excel Files (*.xlsx)', '.xlsx'),
-            'CSV (.csv)': ('CSV Files (*.csv)', '.csv'),
-            'Text (.txt)': ('Text Files (*.txt)', '.txt'),
-            'NumPy (.npy)': ('NumPy Files (*.npy)', '.npy')
-        }
+        filters = export.FORMAT_FILTERS
         if format_str not in filters:
             QMessageBox.critical(self, "Error", f"Unsupported format: {format_str}")
             return
@@ -572,10 +797,18 @@ class SINEXParserApp(QMainWindow):
             except Exception as e:
                 logger.exception("Export error")
                 QMessageBox.critical(self, "Error", f"Export fail: {e}")
-        notification.notify(
-            title="SINEX Studio",
-            message=(f"{orig_file} exported.")
-        )
+        self._notify(f"{orig_file} exported.")
+
+    def _refresh_block_combo(self):
+        keys = list(self.current_data['blocks'].keys()) if self.current_data else []
+        previous = self.block_combo.currentText()
+        self.block_combo.blockSignals(True)
+        self.block_combo.clear()
+        self.block_combo.addItems(keys)
+        if previous in keys:
+            self.block_combo.setCurrentText(previous)
+        self.block_combo.blockSignals(False)
+        self.export_button.setEnabled(bool(keys))
 
     def update_block_display(self):
         if self.current_data and 'blocks' in self.current_data:

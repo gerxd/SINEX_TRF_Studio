@@ -1,4 +1,4 @@
-# parsers/__init__.py
+# io/__init__.py
 from .parsers import SinexBlockParser, SiteIDParser, MatrixEstimateParser
 from .parsers import SolutionStatisticsParser, ParameterParser
 
