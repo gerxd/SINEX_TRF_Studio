@@ -239,6 +239,21 @@ def _cell(value):
     return str(value)
 
 
+def sigma_ranks(data):
+    if block_kind(data) != 'table' or not data or 'sigma' not in data[0] or 'type' not in data[0]:
+        return None
+    types = np.array([str(p.get('type')) for p in data])
+    sigmas = np.array([p.get('sigma') if isinstance(p.get('sigma'), (int, float)) else np.nan
+                       for p in data], dtype=float)
+    ranks = np.full(len(data), np.nan)
+    for t in np.unique(types):
+        rows = np.flatnonzero((types == t) & np.isfinite(sigmas) & (sigmas > 0))
+        if rows.size:
+            ordered = np.sort(sigmas[rows])
+            ranks[rows] = np.searchsorted(ordered, sigmas[rows], side='right') / rows.size
+    return ranks
+
+
 def preview(data, rows=50, cols=8):
     kind = block_kind(data)
     if kind == 'matrix':
@@ -248,8 +263,7 @@ def preview(data, rows=50, cols=8):
         return [str(j + 1) for j in range(c)], [str(i + 1) for i in range(r)], cells, caption
     if kind == 'table':
         headers = list(data[0]) if data else []
-        shown = data[:rows]
-        cells = [[_cell(item.get(h)) for h in headers] for item in shown]
-        caption = f"{len(data)} rows, first {len(shown)} shown"
-        return headers, [str(i + 1) for i in range(len(shown))], cells, caption
+        cells = [[_cell(item.get(h)) for h in headers] for item in data]
+        caption = f"{len(data)} rows"
+        return headers, [str(i + 1) for i in range(len(data))], cells, caption
     return ['value'], ['VARIANCE FACTOR'], [[_cell(data)]], "Single value"

@@ -353,6 +353,8 @@ def figure_dpi():
 
 
 def default_pos_threshold():
+    if get_app_setting('filter/remember', False) not in (True, 'true'):
+        return 0.050
     try:
         return float(get_app_setting('filter/pos_threshold', 0.050) or 0.050)
     except (TypeError, ValueError):
@@ -360,6 +362,8 @@ def default_pos_threshold():
 
 
 def default_vel_threshold():
+    if get_app_setting('filter/remember', False) not in (True, 'true'):
+        return 0.003
     try:
         return float(get_app_setting('filter/vel_threshold', 0.003) or 0.003)
     except (TypeError, ValueError):

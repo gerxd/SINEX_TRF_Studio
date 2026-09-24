@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QProgressBar, QTabWidget,
     QMessageBox, QFileDialog, QComboBox, QPlainTextEdit, QCheckBox, QApplication, QSizePolicy,
     QSplitter, QMenu, QTableWidget, QTableWidgetItem, QLineEdit, QAbstractItemView,
+    QStyleFactory,
     QHeaderView
 )
 from PyQt6.QtCore import QUrl, pyqtSignal, QStandardPaths
@@ -23,6 +24,7 @@ from PyQt6 import QtGui, QtCore
 from .. import __version__
 
 PROGRAM_DIR = Path(__file__).resolve().parents[2]
+
 ICON_PATH = PROGRAM_DIR / 'sinex_parser' / 'ui' / 'icon.ico'
 from ..core import (
     logger, benchmark,
@@ -207,11 +209,11 @@ class SINEXParserApp(QMainWindow):
         self.tab_widget.addTab(self.stations_widget, "Stations")
         QQuickWidget(self).hide()
 
-        self.tab_widget.addTab(self._build_raw_export_tab(), "Raw export")
+        self.tab_widget.addTab(self._build_raw_export_tab(), "Block Export")
 
         # Tab5: Info
         self.info_widget = InfoWidget()
-        self.tab_widget.addTab(self.info_widget, "Info")
+        self.tab_widget.addTab(self.info_widget, "Information")
 
         main_layout.addWidget(self.tab_widget)
         self._apply_log_visibility()
@@ -245,6 +247,8 @@ class SINEXParserApp(QMainWindow):
         self.block_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.block_table.verticalHeader().setVisible(False)
         self.block_table.setWordWrap(False)
+        self._table_style = QStyleFactory.create('Fusion')
+        self.block_table.setStyle(self._table_style)
         header = self.block_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setStretchLastSection(True)
@@ -270,6 +274,7 @@ class SINEXParserApp(QMainWindow):
         preview_layout.addWidget(self.preview_label)
         self.preview_table = QTableWidget()
         self.preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.preview_table.setStyle(self._table_style)
         preview_layout.addWidget(self.preview_table)
 
         splitter = QSplitter(QtCore.Qt.Orientation.Horizontal)
@@ -714,7 +719,6 @@ class SINEXParserApp(QMainWindow):
             remember_dialog_dir(fname)
             logger.info("----- New File -----")
             fpath = Path(fname)
-            self.file_label.setText(fpath.name)
 
             logger.info(f"Selected SINEX file: {fpath.name}")
             if self.file_info_widget:  # Update new widget
@@ -783,6 +787,7 @@ class SINEXParserApp(QMainWindow):
             self.covariance_widget.operations_widget.reset_for_new_file()
         self.progress_bar.setVisible(False)
         self._source_path = Path(self.worker.filename)
+        self.file_label.setText(self._source_path.name)
         self._refresh_benchmark_button()
         # update ui
         if self.datum_widget:
@@ -830,8 +835,11 @@ class SINEXParserApp(QMainWindow):
         if self.datum_widget:
             self.datum_widget.sigma_theta_btn.setEnabled(False)
             self.datum_widget._reset_output_state()
+            self.datum_widget._clear_station_cache()
         if self.covariance_widget and self.covariance_widget.operations_widget:
             self.covariance_widget.operations_widget.reset_for_new_file()
+        if self.covariance_widget:
+            self.covariance_widget.setup_data({})
         if self.stations_widget:
             self.stations_widget.set_data([])
         self._source_path = None
@@ -949,6 +957,7 @@ class SINEXParserApp(QMainWindow):
             return
         key = self.block_table.item(row, 0).text()
         headers, labels, cells, caption = raw_export.preview(blocks[key])
+        self.preview_table.setUpdatesEnabled(False)
         self.preview_table.setRowCount(len(cells))
         self.preview_table.setColumnCount(len(headers))
         self.preview_table.setHorizontalHeaderLabels(headers)
@@ -956,6 +965,19 @@ class SINEXParserApp(QMainWindow):
         for i, line in enumerate(cells):
             for j, text in enumerate(line):
                 self.preview_table.setItem(i, j, QTableWidgetItem(text))
+        ranks = raw_export.sigma_ranks(blocks[key])
+        if ranks is not None:
+            col = headers.index('sigma')
+            base = QtGui.QColor(tone_color("warn", self.preview_table))
+            for i, rank in enumerate(ranks):
+                if np.isfinite(rank):
+                    item = self.preview_table.item(i, col)
+                    shade = QtGui.QColor(base)
+                    shade.setAlpha(int(200 * rank ** 2))
+                    item.setBackground(shade)
+                    ptype = cells[i][headers.index('type')]
+                    item.setToolTip(f"Percentile {rank * 100:.0f} among the {ptype} sigmas")
+        self.preview_table.setUpdatesEnabled(True)
         self.preview_table.resizeColumnsToContents()
         self.preview_label.setText(f"{key}: {caption}")
 

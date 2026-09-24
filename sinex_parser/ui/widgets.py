@@ -26,7 +26,6 @@ from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 import pyqtgraph as pg
 import matplotlib
 from matplotlib import cm, colors as mcolors
-from pyqtgraph.exporters import ImageExporter
 pg.setConfigOptions(imageAxisOrder="row-major", useOpenGL=True, antialias=False)
 matplotlib.use("QtAgg")  # ensure Qt5 backend
 import matplotlib.pyplot as plt
@@ -749,7 +748,7 @@ class MatrixVisualizerWidget(QWidget):
                 self._pg_img_item = pg.ImageItem(axisOrder="row-major")
                 #self._pg_img_item = pg.ImageItem(axisOrder="row-major")
                 vb.addItem(self._pg_img_item)
-                vb.invertY(False)
+                vb.invertY(True)
 
                 # Link histogram and set colormap on the histogram gradient
                 self._pg_hist_widget.setImageItem(self._pg_img_item)
@@ -915,35 +914,11 @@ class MatrixVisualizerWidget(QWidget):
             # M32, cmap, export_metadata = self._build_heatmap_state(selected_key, M, full_resolution=True) removed with v1.1
             # vmin, vmax = export_metadata["levels"] removed with v1.1
 
-            img_item = pg.ImageItem(axisOrder="row-major")
             lut = cmap.getLookupTable(0.0, 1.0, 256)
-            img_item.setLookupTable(lut)
-            img_item.setImage(M32, autoLevels=False, levels=(vmin, vmax))
-
-            tmp_widget = pg.GraphicsLayoutWidget()
-            vb = tmp_widget.addViewBox(lockAspect=False, enableMenu=False)
-            vb.invertY(False)  # Standard image orientation: top-left origin
-            vb.addItem(img_item)
-            vb.setRange(xRange=(0, m), yRange=(0, n), padding=0.0)
-            exporter = ImageExporter(vb)
-         
-            exporter.parameters()["width"] = int(m)
-            if "height" in exporter.parameters():
-                exporter.parameters()["height"] = int(n)
-            
-            
-            if "antialias" in exporter.parameters():
-                exporter.parameters()["antialias"] = False
-
             logger.info(f"Exporting {n}×{m} matrix image to {fname}")
-            exporter.export(fname)
-
-            
-            try:
-                tmp_widget.close()
-                tmp_widget.deleteLater()
-            except RuntimeError:
-                pass  
+            argb, alpha = pg.makeARGB(M32, lut=lut, levels=(vmin, vmax))
+            if not pg.makeQImage(argb, alpha, transpose=False).save(fname):
+                raise OSError(f"the image could not be written to {fname}")
 
             elapsed = time.time() - t_start # metrics
             
@@ -1594,6 +1569,11 @@ class OperationsWidget(QWidget):
                 "Dimension mismatch between Normal matrix and parameter count."
             )
             return
+        try:
+            est_data = datum_math.index_ordered(est_data, n, normal_math.NormalMatrixError)
+        except normal_math.NormalMatrixError as exc:
+            QMessageBox.critical(self, "Error", str(exc))
+            return
 
         u, dx = normal_math.compute_u(self._normal_matrix, est_data, apr_data)
         self._u_vector = u
@@ -1773,6 +1753,11 @@ class InfoWidget(QWidget):
         header_font.setBold(True)
         contact_header.setFont(header_font)
 
+        authors_header = QLabel("Authors")
+        authors_header.setFont(header_font)
+        authors_body = QLabel("Gerasimos M. Dossas\nDimitrios Ampatzidis")
+        authors_body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
         contact_body = QLabel(
             "Gerasimos M. Dossas\n @ gerasimos.dossas@gmail.com"
         )
@@ -1782,6 +1767,9 @@ class InfoWidget(QWidget):
         details_layout.addWidget(title_label)
         details_layout.addWidget(subtitle_label)
         details_layout.addWidget(version_label)
+        details_layout.addSpacing(8)
+        details_layout.addWidget(authors_header)
+        details_layout.addWidget(authors_body)
         details_layout.addSpacing(8)
         details_layout.addWidget(contact_header)
         details_layout.addWidget(contact_body)
@@ -2624,6 +2612,11 @@ class DatumWidget(QWidget):
                 self, "Data Error", "SOLUTION/ESTIMATE block not found."
             )
             return
+        try:
+            sol = datum_math.index_ordered(sol, Cx.shape[0])
+        except datum_math.DatumError as exc:
+            QMessageBox.warning(self, "Data Error", str(exc))
+            return
 
         self._append_section("Sigma Theta computation")
 
@@ -3001,7 +2994,11 @@ class FilterOptionsDialog(QDialog):
         Cx = CxL if CxL is not None else CxU
         if Cx is None:
             return
-        
+        try:
+            sol = datum_math.index_ordered(sol, Cx.shape[0])
+        except datum_math.DatumError:
+            pass
+
         # Group parameters by station
         station_episodes = {}  # {station_code: [(code, pt, soln), ...]}
         episode_params = {}  # {(code, pt, soln): [params]}

@@ -104,9 +104,13 @@ def _per_line(body, fortran):
         for i, v in enumerate(tokens[2:]):
             if fortran:
                 v = v.replace("D", "E").replace("d", "e")
+            try:
+                value = float(v)
+            except ValueError:
+                value = float(v.replace("D", "E").replace("d", "e"))
             rows.append(r)
             cols.append(c + i)
-            vals.append(float(v))
+            vals.append(value)
     return (np.array(rows, dtype=np.int64), np.array(cols, dtype=np.int64),
             np.array(vals, dtype=np.float64), header, count, body.count(b"\n"))
 

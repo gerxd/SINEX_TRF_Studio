@@ -183,7 +183,10 @@ class MatrixEstimateParser(SinexBlockParser):
         if self._should_replace:
             vals = [float(v.replace('D', 'E').replace('d', 'e')) for v in tokens[2:]]
         else:
-            vals = [float(v) for v in tokens[2:]]
+            try:
+                vals = [float(v) for v in tokens[2:]]
+            except ValueError:
+                vals = [float(v.replace('D', 'E').replace('d', 'e')) for v in tokens[2:]]
 
         for i, val in enumerate(vals):
             cc = col_idx + i
@@ -230,7 +233,10 @@ class MatrixEstimateParser(SinexBlockParser):
             if should_replace:
                 vals = [float(v.replace('D','E').replace('d','e')) for v in tokens[2:]]
             else:
-                vals = [float(v) for v in tokens[2:]]
+                try:
+                    vals = [float(v) for v in tokens[2:]]
+                except ValueError:
+                    vals = [float(v.replace('D','E').replace('d','e')) for v in tokens[2:]]
 
             row_idx = rnum - 1
             col_idx = cnum - 1
@@ -312,62 +318,82 @@ class ParameterParser(SinexBlockParser):
                 return False
         return True
 
+    _COLUMNS = ((1, 6), (7, 13), (14, 18), (19, 21), (22, 26), (27, 39), (40, 44), (47, 68), (69, 80))
+    _GAPS = (6, 13, 18, 21, 26, 39, 44, 46, 68)
+
+    @classmethod
+    def _parse_fixed_columns(cls, line: str) -> Optional[dict]:
+        if len(line) < 70 or any(line[i] != ' ' for i in cls._GAPS):
+            return None
+        idx, ptype, code, pt, soln, epoch, unit, val, sig = (line[a:b].strip() for a, b in cls._COLUMNS)
+        if not ptype or any(' ' in s for s in (ptype, code, pt, soln, epoch, unit)):
+            return None
+        try:
+            return {
+                'index': int(idx),
+                'type': ptype,
+                'code': code,
+                'pt': pt,
+                'soln': int(soln) if soln.isdigit() else None,
+                'epoch': epoch,
+                'unit': unit,
+                'value': float(val.replace('D', 'E').replace('d', 'e')),
+                'sigma': float(sig.replace('D', 'E').replace('d', 'e')),
+            }
+        except ValueError:
+            return None
+
     def parse(self, block_data: List[str]) -> List[dict]:
         results = []
         irregular = 0
+        unreadable = 0
+        fixed = 0
+        skipped = 0
         for line in block_data:
             ln = line.strip()
             if not ln or ln.startswith('*'):
                 continue
             tokens = ln.split()
+            record = None
             if len(tokens) != 10:
                 irregular += 1
-            if len(tokens) < 9:
-                continue
-            try:
-                idx = int(tokens[0])
-            except:
-                idx = -1
-            param_type = tokens[1]
-            # extract station code as token 2 (standard structure)
-            station_code = tokens[2] #if len(tokens) > 2 else "" sanity check
-            pt = tokens[3] if len(tokens) > 3 else ""
-            soln = None
-            if len(tokens) > 4:
+            else:
+                try:
+                    idx = int(tokens[0])
+                except:
+                    idx = -1
+                soln = None
                 try:
                     soln = int(tokens[4])
                 except Exception:
                     soln = None
-
-            epoch = tokens[5] if len(tokens) > 5 else ""
-            unit = tokens[6] if len(tokens) > 6 else ""
-
-            # fortran "D" notation handling
-            val_str = tokens[8].replace('D', 'E').replace('d', 'e')
-            sig_str = "0"
-            if len(tokens) >= 10:
-                sig_str = tokens[9].replace('D', 'E').replace('d', 'e')
-            try:
-                val_f = float(val_str)
-            except:
-                val_f = 0.0
-            try:
-                sig_f = float(sig_str)
-            except:
-                sig_f = 0.0
-            results.append({
-                'index': idx, #index
-                'type': param_type,
-                'code': station_code,
-                'pt': pt,
-                'soln': soln,
-                'epoch': epoch,
-                'unit': unit,
-                'value': val_f,
-                'sigma': sig_f,
-            })
-        if irregular:
-            logger.warning(f"{irregular} parameter lines do not have 10 fields; values may be read from the wrong column.")
+                try:
+                    record = {
+                        'index': idx,
+                        'type': tokens[1],
+                        'code': tokens[2],
+                        'pt': tokens[3],
+                        'soln': soln,
+                        'epoch': tokens[5],
+                        'unit': tokens[6],
+                        'value': float(tokens[8].replace('D', 'E').replace('d', 'e')),
+                        'sigma': float(tokens[9].replace('D', 'E').replace('d', 'e')),
+                    }
+                except ValueError:
+                    unreadable += 1
+            if record is None:
+                record = self._parse_fixed_columns(line)
+                if record is None:
+                    skipped += 1
+                    continue
+                fixed += 1
+            results.append(record)
+        self.skipped = skipped
+        if irregular or unreadable:
+            logger.warning(
+                f"{irregular} parameter lines do not have 10 fields and {unreadable} have a "
+                f"number that cannot be read. {fixed} were read by the SINEX fixed columns "
+                f"and {skipped} were skipped.")
         return results
 
     def export(self, data: List[dict], filename: Path, format: str):

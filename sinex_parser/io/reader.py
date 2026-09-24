@@ -65,6 +65,11 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
                         if isinstance(parser, MatrixEstimateParser):
                             # find matrix dim from SOLUTION/ESTIMATE
                             est = sinex_data['blocks'].get('SOLUTION/ESTIMATE')
+                            skipped = getattr(block_parsers.get('SOLUTION/ESTIMATE'), 'skipped', 0)
+                            if est is not None and skipped:
+                                raise ValueError(
+                                    f"{skipped} SOLUTION/ESTIMATE line{'s' if skipped != 1 else ''} "
+                                    "could not be read, so the covariance cannot be matched to the parameters.")
                             if est is not None:
                                 sz = len(est)
                                 parser.init_stream(sz)
@@ -132,7 +137,7 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
             raise SinexStructureError("Invalid SINEX block structure!")
         est = sinex_data['blocks'].get('SOLUTION/ESTIMATE')
         if est and any(p.get('index') != i for i, p in enumerate(est, 1)):
-            logger.warning("SOLUTION/ESTIMATE is not in INDEX order 1 to n, so parameters will not line up with the covariance rows.")
+            logger.warning("SOLUTION/ESTIMATE is not in INDEX order 1 to n. The datum and normal computations sort it by INDEX, or refuse it if INDEX is not a permutation of 1 to n.")
         logger.info(f"Finished parse of {filename.name} in {time.time()-start_time:.3f}s.")
         logger.info(f"Total lines read: {total_lines}, blocks: {len(sinex_data['blocks'])}.")
         benchmark.end(parse_token)

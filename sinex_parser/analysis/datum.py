@@ -331,6 +331,21 @@ class DatumError(Exception):
     pass
 
 
+def index_ordered(sol, n, error=DatumError):
+    idx = [p.get("index") for p in sol]
+    expected = list(range(1, n + 1))
+    if idx == expected:
+        return sol
+    if len(idx) == n and all(isinstance(i, int) for i in idx) and sorted(idx) == expected:
+        return sorted(sol, key=lambda p: p["index"])
+    raise error(
+        f"The INDEX values of SOLUTION/ESTIMATE are not the numbers 1 to {n}, one per "
+        f"covariance row. The block has {len(sol)} parameters, with gaps or duplicates "
+        "in INDEX or a size that differs from the matrix, so parameters cannot be "
+        "matched to covariance rows."
+    )
+
+
 class AppliedFilter(NamedTuple):
     enabled: bool
     pos_threshold_m: float
@@ -524,6 +539,13 @@ def sigma_theta_from_covariance(sol, Cx, episodes_to_exclude):
     )
     if E.size == 0:
         raise DatumError("No stations remained after filtering.")
+    epochs = {filtered_sol[i].get("epoch") for i in row_idx
+              if filtered_sol[i].get("type") in ("STAX", "STAY", "STAZ")}
+    if len(epochs) > 1:
+        logger.warning(
+            f"[Datum] the station positions used have {len(epochs)} different reference "
+            "epochs. The datum model assumes that all positions share one epoch."
+        )
     # Extract covariance submatrix for coordinates actually used in Helmert transformation
 
     if row_idx.size == filtered_Cx.shape[0] and np.array_equal(
@@ -633,18 +655,28 @@ def helmert_parameters(sigma_theta):
 
 
 def is_filtered(applied, filtered_episodes_info):
-    if applied is None or not applied.enabled:
+    if applied is None or not (applied.enabled or applied.manual_enabled):
         return False
     if not filtered_episodes_info:
         return False
     return True
 
 
+def _mm_tag(value):
+    mm = value * 1000.0
+    text = f"{mm:g}"
+    if "." in text and "e" not in text:
+        return text.replace(".", "p")
+    return str(int(round(mm)))
+
+
 def filter_tag(applied, filtered_episodes_info):
     try:
         if is_filtered(applied, filtered_episodes_info):
-            pos_mm = int(round(applied.pos_threshold_m * 1000.0))
-            vel_mm = int(round(applied.vel_threshold_m_per_y * 1000.0))
+            if applied.manual_enabled:
+                return f"_manual_{len(filtered_episodes_info)}excl"
+            pos_mm = _mm_tag(applied.pos_threshold_m)
+            vel_mm = _mm_tag(applied.vel_threshold_m_per_y)
             return f"_filtered_p{pos_mm}mm_v{vel_mm}mmyr"
     except Exception:
         pass
@@ -654,6 +686,8 @@ def filter_tag(applied, filtered_episodes_info):
 def filter_disp(applied, filtered_episodes_info):
     try:
         if is_filtered(applied, filtered_episodes_info):
+            if applied.manual_enabled:
+                return f" [manual selection, {len(filtered_episodes_info)} episodes excluded]"
             p = applied.pos_threshold_m
             v = applied.vel_threshold_m_per_y
             return f" [filtered p={p:.3f} m, v={v:.3f} m/yr]"

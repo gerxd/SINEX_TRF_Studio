@@ -113,5 +113,7 @@ def build_stats_report(filename, var_factor, filter_tag, sigma_theta, cross_corr
     info = filtered_episodes_info or []
     add(f"  episodes excluded by filter: {len(info)}")
     add(f"  filtering active: {filtering_active}")
+    if filter_tag and filter_tag.startswith("_manual"):
+        add("  selection: manual, the auto thresholds were not applied")
 
     return "\n".join(lines) + "\n"

@@ -81,8 +81,9 @@ The User Interface is split between tabs, each for a specific workflow:
 - **Covariance Matrix**: inspect the loaded covariance, compute the normal matrix, compute `u = N * (Xest - Xapr)`, run the recomputation check, and export the resulting arrays.
 - **Datum Effect**: calculate SigmaTheta, optionally apply a STDEV filtering pass or **manually select episodes** using the Manual Episode Selection Button, then compute cross correlations and Helmert parameters using the corresponding buttons.
 - **Stations**: review station records and inspect the station map. Filtered stations can be highlighted after datum filtering. 
-- **Raw export**: review the detected blocks and export a selected block as-is.
-- **Info**: check version and dependency information.
+- **Block Export**: preview the blocks the file holds and export several at once, with
+  parameter labels for the matrices and a manifest of the files written.
+- **Information**: check the version, the authors and dependency information.
 
 ### Exporting results
 

@@ -134,7 +134,7 @@ def cmd_datum(args):
     data = _load(args.file)
     blocks = data["blocks"]
     Cx = _require_cova(blocks)
-    sol = _require_estimate(blocks)
+    sol = datum.index_ordered(_require_estimate(blocks), Cx.shape[0])
 
     applied = _applied_filter(args)
     excluded, details = datum.select_excluded_episodes(sol, Cx, applied)
@@ -220,7 +220,8 @@ def cmd_normal(args):
     elif N.shape[0] != len(est_data):
         raise CliError("dimension mismatch between the normal matrix and the parameter count")
     else:
-        u, dx = normal.compute_u(N, est_data, apr_est)
+        u, dx = normal.compute_u(
+            N, datum.index_ordered(est_data, N.shape[0], normal.NormalMatrixError), apr_est)
 
     stem = Path(data["metadata"]["filename"]).stem
     out_dir = Path(args.out)

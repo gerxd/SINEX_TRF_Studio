@@ -20,6 +20,7 @@ REQUIREMENTS = ROOT / "requirements.txt"
 MAIN = ROOT / "main.py"
 PACKAGE_DIR = ROOT / "sinex_parser"
 STAMP = VENV_DIR / ".deps_stamp"
+LAUNCH_LOG = "launch.log"
 PYTHON_VERSION = "3.12"
 MINIMUM_PYTHON = (3, 12)
 STAMP_SCHEMA = 1
@@ -299,9 +300,10 @@ def verify_install(python):
 
 def install_environment(uv, reinstall):
     for command in create_environment_commands(uv, reinstall):
-        if run(command) != 0:
+        code = run(command)
+        if code != 0:
             print()
-            print("The step above failed. Check the internet connection, then run this script again.")
+            print("This step failed with exit code " + str(code) + ": " + display(command))
             return False
     if not verify_install(venv_python()):
         return False
@@ -354,16 +356,17 @@ def relaunch():
         if not python.is_file():
             python = venv_python()
         try:
-            subprocess.Popen(
-                [str(python), str(MAIN)],
-                cwd=str(ROOT),
-                env=env,
-                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-            )
+            with open(VENV_DIR / LAUNCH_LOG, "w", encoding="utf-8") as log:
+                subprocess.Popen(
+                    [str(python), str(MAIN)],
+                    cwd=str(ROOT),
+                    env=env,
+                    creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=log,
+                    close_fds=True,
+                )
         except OSError as error:
             print("The application could not start: " + str(error))
             return 1

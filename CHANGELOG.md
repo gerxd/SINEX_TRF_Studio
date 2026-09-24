@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.4.2
+
+Changes:
+- The Raw export tab is renamed Block Export
+- The preview of SOLUTION/ESTIMATE and SOLUTION/APRIORI shades each sigma cell by its
+  rank among the sigmas of the same parameter type, so the largest sigmas of STAX, VELZ
+  and the others stand out. Hovering a cell shows the percentile
+- The preview shows every row of a table block, not only the first 50
+- Filter tags in file names keep sub-millimetre thresholds apart, for example
+  `_filtered_p1p5mm_v2p5mmyr`. Whole millimetre thresholds keep the tags they had
+- A manual episode selection is tagged `_manual_<N>excl`, where N is the number of
+  excluded episodes, and the plot titles and the statistics report say manual
+- With "Remember filter thresholds" off, a new window starts at the default thresholds
+- On Windows, errors from the application after the launcher starts it are written to
+  `.venv/launch.log`. A failed install step names the command and its exit code
+
+Fixes:
+- In the block list and the preview, the Windows 11 selection marker was drawn over the
+  first letter of every cell in the selected row. Both tables now highlight the whole row
+- A SOLUTION/ESTIMATE block listed out of INDEX order gives the same Sigma Theta, cross
+  correlations, Helmert parameters and u as the same block in order. A block whose INDEX
+  values are not the numbers 1 to n is refused
+- A SOLUTION/ESTIMATE or SOLUTION/APRIORI line with a blank field, such as PT or SOLN, is
+  read by the SINEX column positions. A line that cannot be read is skipped and counted in
+  the log, and an unreadable number is no longer read as 0. When a SOLUTION/ESTIMATE line
+  is skipped in a file with a covariance block, the load stops with a message that says so
+- The datum computation logs a warning when the station positions it uses have more than
+  one reference epoch
+- A covariance block that mixes E and D exponents no longer stops the load
+- After a failed load, the Covariance tab, the datum station list, the Block Export tab
+  and the file information are cleared. The file name in the header changes when the
+  parse completes, not when the file is chosen
+- "Save full 1:1 plot" writes an n by n image with row 0 at the top. The interactive
+  PyQtGraph plot also shows row 0 at the top
+
 ## 1.4.1
 
 Changes:
