@@ -13,6 +13,10 @@ authors:
     orcid: "https://orcid.org/0009-0007-9414-7562"
     affiliation: International Hellenic University
     email: gerasimos.dossas@gmail.com
+  - family-names: Ampatzidis
+    given-names: Dimitrios
+    orcid: "https://orcid.org/0000-0002-0182-5093"
+    affiliation: International Hellenic University
 abstract: >
   SINEX TRF Studio is a PyQt5 desktop application for ingesting, analyzing, and
   visualizing geodetic SINEX (Solution Independent Exchange) files. It parses
