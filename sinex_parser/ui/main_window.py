@@ -7,9 +7,11 @@ from PyQt6.QtWidgets import (
     QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
     QLabel, QPushButton, QProgressBar, QTabWidget,
     QMessageBox, QFileDialog, QComboBox, QPlainTextEdit, QCheckBox, QApplication, QSizePolicy,
-    QSplitter, QMenu
+    QSplitter, QMenu, QTableWidget, QTableWidgetItem, QLineEdit, QAbstractItemView,
+    QHeaderView
 )
 from PyQt6.QtCore import QUrl, pyqtSignal
+from PyQt6.QtQuickWidgets import QQuickWidget
 import numpy as np
 from pathlib import Path
 from plyer import notification
@@ -18,19 +20,20 @@ from PyQt6 import QtGui, QtCore
 
 from .. import __version__
 from ..core import (
-    logger, SinexFileValidator, benchmark,
+    logger, benchmark,
     remember_dialog_dir, default_save_path, ensure_suffix,
     get_app_setting, set_app_setting,
     LOG_FILENAME, log_file_path, set_file_logging, set_log_file, clear_log_file,
     default_export_format, default_export_dir, default_skip_validation,
-    default_skip_epochs, figure_dpi, set_console_level,
+    default_skip_epochs, figure_dpi, set_console_level, get_dialog_dir,
 )
 
-from ..io import create_parsers
-from ..io import export
+from ..io import create_parsers, parallel
+from ..io import export, raw_export
 from ..ui.widgets import (
-    ParserWorker, CovarianceMatrixWidget, StationsWidget,
-    InfoWidget, DatumWidget, FileInfoWidget, QPlainTextEditLogger
+    ParserWorker, CovarianceMatrixWidget, StationsWidget, run_task,
+    InfoWidget, DatumWidget, FileInfoWidget, QPlainTextEditLogger,
+    make_section_header, set_status, tone_color
 )
 
 
@@ -40,11 +43,12 @@ class SINEXParserApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.block_parsers = create_parsers()
-        self.validator = SinexFileValidator()
         self.current_data = None
         self.custom_variance_factor = None
         self._parse_generation = 0
         self._active_workers = set()
+        self._source_path = None
+        self._raw_export_running = False
         self._theme = get_app_setting('ui/theme', 'light') or 'light'
         self._log_visible = get_app_setting('ui/log_visible', True) not in (False, 'false')
         self._remember_geometry = get_app_setting('ui/remember_geometry', False) in (True, 'true')
@@ -55,6 +59,8 @@ class SINEXParserApp(QMainWindow):
         self._console_level = int(get_app_setting('log/console_level', logging.WARNING)
                                   or logging.WARNING)
         self._remember_filter = get_app_setting('filter/remember', False) in (True, 'true')
+        parallel.ENABLED = get_app_setting('parse/parallel', True) not in (False, 'false')
+        parallel.MAX_WORKERS = int(get_app_setting('parse/workers', 4) or 4)
         self._apply_log_settings()
         set_console_level(self._console_level)
         self._apply_theme(self._theme)
@@ -67,7 +73,7 @@ class SINEXParserApp(QMainWindow):
         #logger.warning("Preliminary test version. Verify all results before use.")
 
     def init_ui(self):
-        self.setWindowTitle('SINEX TRF Studio')
+        self.setWindowTitle(f'SINEX TRF Studio {__version__}')
         screen = QApplication.primaryScreen().availableGeometry()
         self.setGeometry(
             screen.x() + 50,
@@ -195,55 +201,9 @@ class SINEXParserApp(QMainWindow):
         # Tab3: Stations
         self.stations_widget = StationsWidget()
         self.tab_widget.addTab(self.stations_widget, "Stations")
+        QQuickWidget(self).hide()
 
-        # tab 4: raw export
-        export_widget = QWidget()
-        export_layout = QVBoxLayout(export_widget)
-
-        self.block_display = QPlainTextEdit()
-        self.block_display.setReadOnly(True)
-        self.block_display.setStyleSheet(
-            """
-            QPlainTextEdit {
-                font-size: 18;
-                border: 1px solid #cccccc;
-                padding: 5px;
-            }
-            """
-        )
-
-        export_layout.addWidget(self.block_display)
-
-        self.block_combo = QComboBox()
-        self.block_combo.addItems([
-            'SOLUTION/MATRIX_ESTIMATE L COVA',
-            'SOLUTION/MATRIX_APRIORI L COVA',
-            'SOLUTION/MATRIX_ESTIMATE U COVA',
-            'SOLUTION/MATRIX_APRIORI U COVA',
-            'SITE/ID',
-            'SOLUTION/STATISTICS',
-            'SOLUTION/ESTIMATE',
-            'SOLUTION/APRIORI'
-        ])
-        export_label = QLabel("Select Block to Export as-is:")
-        export_label.setStyleSheet("font-weight: bold; font-size: 14;")
-        export_layout.addWidget(export_label)
-        export_layout.addWidget(self.block_combo)
-
-        self.block_combo.currentIndexChanged.connect(self.update_block_display)
-
-        export_line = QHBoxLayout()
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(['Excel (.xlsx)', 'CSV (.csv)', 'Text (.txt)', 'NumPy (.npy)'])
-        self.format_combo.setCurrentText(default_export_format())
-        export_line.addWidget(QLabel("Export Format:"))
-        export_line.addWidget(self.format_combo)
-        self.export_button = QPushButton("Export Data")
-        self.export_button.setEnabled(False)
-        self.export_button.clicked.connect(self.export_data)
-        export_line.addWidget(self.export_button)
-        export_layout.addLayout(export_line)
-        self.tab_widget.addTab(export_widget, "Raw export")
+        self.tab_widget.addTab(self._build_raw_export_tab(), "Raw export")
 
         # Tab5: Info
         self.info_widget = InfoWidget()
@@ -261,6 +221,98 @@ class SINEXParserApp(QMainWindow):
             saved = get_app_setting('window/geometry')
             if saved is not None:
                 self.restoreGeometry(saved)
+
+    def _build_raw_export_tab(self):
+        tab = QWidget()
+        tab.setStyleSheet(
+            "QPushButton {font-size: 14px;} QComboBox {font-size: 14px;} QLabel {font-size: 14px;} "
+            "QCheckBox {font-size: 14px;} QLineEdit {font-size: 14px;}")
+        layout = QVBoxLayout(tab)
+
+        blocks_panel = QWidget()
+        blocks_panel.setMinimumWidth(560)
+        blocks_layout = QVBoxLayout(blocks_panel)
+        blocks_layout.setContentsMargins(0, 0, 0, 0)
+        make_section_header("Blocks in the file", blocks_layout)
+        self.block_table = QTableWidget(0, 4)
+        self.block_table.setHorizontalHeaderLabels(["Block", "Kind", "Size", "Estimated output"])
+        self.block_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.block_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.block_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.block_table.verticalHeader().setVisible(False)
+        self.block_table.setWordWrap(False)
+        header = self.block_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
+        self.block_table.currentCellChanged.connect(lambda *_: self.update_block_display())
+        self.block_table.itemChanged.connect(lambda *_: self._update_raw_summary())
+        blocks_layout.addWidget(self.block_table)
+        select_row = QHBoxLayout()
+        select_all = QPushButton("Select all")
+        select_all.clicked.connect(lambda: self._set_raw_checks(True))
+        select_none = QPushButton("Select none")
+        select_none.clicked.connect(lambda: self._set_raw_checks(False))
+        select_row.addWidget(select_all)
+        select_row.addWidget(select_none)
+        select_row.addStretch()
+        blocks_layout.addLayout(select_row)
+
+        preview_panel = QWidget()
+        preview_layout = QVBoxLayout(preview_panel)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        make_section_header("Preview", preview_layout)
+        self.preview_label = QLabel("No file loaded")
+        self.preview_label.setWordWrap(True)
+        preview_layout.addWidget(self.preview_label)
+        self.preview_table = QTableWidget()
+        self.preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        preview_layout.addWidget(self.preview_table)
+
+        splitter = QSplitter(QtCore.Qt.Orientation.Horizontal)
+        splitter.addWidget(blocks_panel)
+        splitter.addWidget(preview_panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        layout.addWidget(splitter, 1)
+
+        make_section_header("Export", layout)
+        options_row = QHBoxLayout()
+        options_row.addWidget(QLabel("Format:"))
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(list(export.FORMAT_EXTENSIONS))
+        self.format_combo.setCurrentText(default_export_format())
+        self.format_combo.currentIndexChanged.connect(lambda *_: self._refresh_raw_estimates())
+        options_row.addWidget(self.format_combo)
+        options_row.addSpacing(16)
+        self.param_labels_check = QCheckBox("Parameter labels for matrices")
+        self.param_labels_check.setChecked(True)
+        self.param_labels_check.setToolTip(
+            "Write a _params.csv beside each matrix with the parameter of every row")
+        options_row.addWidget(self.param_labels_check)
+        self.manifest_check = QCheckBox("Write manifest")
+        self.manifest_check.setChecked(True)
+        self.manifest_check.setToolTip(
+            f"Write {raw_export.MANIFEST_NAME} with the size and SHA-256 of every file")
+        options_row.addWidget(self.manifest_check)
+        options_row.addStretch()
+        layout.addLayout(options_row)
+
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(QLabel("Folder:"))
+        self.export_dir_edit = QLineEdit(default_export_dir() or get_dialog_dir())
+        folder_row.addWidget(self.export_dir_edit, 1)
+        browse = QPushButton("Browse...")
+        browse.clicked.connect(self._choose_raw_export_dir)
+        folder_row.addWidget(browse)
+        self.export_button = QPushButton("Export")
+        self.export_button.setEnabled(False)
+        self.export_button.clicked.connect(self.export_data)
+        folder_row.addWidget(self.export_button)
+        layout.addLayout(folder_row)
+
+        self.raw_status_label = QLabel("No file loaded")
+        layout.addWidget(self.raw_status_label)
+        return tab
 
     def _show_settings_menu(self):
         corner = self.settings_button.rect().bottomLeft()
@@ -349,6 +401,21 @@ class SINEXParserApp(QMainWindow):
         self._skip_epochs_action.triggered.connect(
             lambda checked: self._set_parse_default('parse/skip_epochs', checked))
         parse_menu.addAction(self._skip_epochs_action)
+
+        self._parallel_action = QAction('Parse large files in parallel', self, checkable=True)
+        self._parallel_action.setChecked(parallel.ENABLED)
+        self._parallel_action.triggered.connect(self._toggle_parallel)
+        parse_menu.addAction(self._parallel_action)
+
+        workers_menu = parse_menu.addMenu('Parallel workers')
+        self._workers_group = QActionGroup(self)
+        self._workers_group.setExclusive(True)
+        for n in (2, 4, 8):
+            act = QAction(str(n), self, checkable=True)
+            act.setChecked(n == parallel.MAX_WORKERS)
+            act.triggered.connect(lambda _checked, n=n: self._set_parse_workers(n))
+            self._workers_group.addAction(act)
+            workers_menu.addAction(act)
 
         self._remember_filter_action = QAction('Remember filter thresholds', self, checkable=True)
         self._remember_filter_action.setChecked(self._remember_filter)
@@ -485,6 +552,14 @@ class SINEXParserApp(QMainWindow):
     def _set_figure_dpi(self, dpi: int):
         set_app_setting('figures/dpi', int(dpi))
 
+    def _toggle_parallel(self, checked: bool):
+        parallel.ENABLED = bool(checked)
+        set_app_setting('parse/parallel', bool(checked))
+
+    def _set_parse_workers(self, n: int):
+        parallel.MAX_WORKERS = n
+        set_app_setting('parse/workers', n)
+
     def _set_parse_default(self, key: str, checked: bool):
         set_app_setting(key, bool(checked))
         if key == 'parse/skip_validation':
@@ -603,11 +678,6 @@ class SINEXParserApp(QMainWindow):
             if self.file_info_widget:  # Update new widget
                 self.file_info_widget.clear_display()  # Clear previous info
 
-            if not self.skip_validation.isChecked():
-                if not self.validator.validate_block_structure(fpath):
-                    QMessageBox.critical(self, "Error", "Invalid SINEX block structure!")
-                    return
-
             self.progress_bar.setVisible(True)
             self.progress_bar.setRange(0, 0)
             skip_epochs = self.skip_epoch.isChecked()
@@ -619,7 +689,7 @@ class SINEXParserApp(QMainWindow):
                 size = 0
 
             benchmark.start_file(fpath.name, size, generation=self._parse_generation)
-            worker = ParserWorker(fpath, self.block_parsers, skip_epochs_block=skip_epochs, skip_validation=skip_val)
+            worker = ParserWorker(fpath, create_parsers(), skip_epochs_block=skip_epochs, skip_validation=skip_val)
             # tag worker with the current parse generation so a stale worker that finishes late cannot overwrite newer data
             worker.parse_generation = self._parse_generation
             self._active_workers.add(worker)
@@ -670,7 +740,7 @@ class SINEXParserApp(QMainWindow):
         if self.covariance_widget and self.covariance_widget.operations_widget:
             self.covariance_widget.operations_widget.reset_for_new_file()
         self.progress_bar.setVisible(False)
-        self.export_button.setEnabled(True)
+        self._source_path = Path(self.worker.filename)
         self._refresh_benchmark_button()
         # update ui
         if self.datum_widget:
@@ -688,9 +758,7 @@ class SINEXParserApp(QMainWindow):
             logger.info("No SITE/ID data found.")
             # clear stations left over from any previous file
             self.stations_widget.set_data([])
-        # Update the raw export display.
-        self._refresh_block_combo()
-        self.update_block_display()
+        self._refresh_raw_blocks()
         QMessageBox.information(self, "Success", "SINEX file parsed successfully!")
         self._notify("SINEX file parsed successfully!")
 
@@ -704,6 +772,9 @@ class SINEXParserApp(QMainWindow):
             return
         self.progress_bar.setVisible(False)
         self.discard_loaded_file()
+        if getattr(worker, "structure_error", False):
+            QMessageBox.critical(self, "Error", "Invalid SINEX block structure!")
+            return
         QMessageBox.critical(self, "Error", f"Parsing error: {err}")
 
 
@@ -721,54 +792,206 @@ class SINEXParserApp(QMainWindow):
             self.covariance_widget.operations_widget.reset_for_new_file()
         if self.stations_widget:
             self.stations_widget.set_data([])
-        self.block_combo.clear()
+        self._source_path = None
+        self._refresh_raw_blocks()
+
+    def _raw_ext(self):
+        return export.FORMAT_EXTENSIONS[self.format_combo.currentText()][1:]
+
+    def _raw_blocks(self):
+        return self.current_data['blocks'] if self.current_data else {}
+
+    def _raw_selected(self):
+        keys = []
+        for row in range(self.block_table.rowCount()):
+            item = self.block_table.item(row, 0)
+            if (item.checkState() == QtCore.Qt.CheckState.Checked
+                    and item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable):
+                keys.append(item.text())
+        return keys
+
+    def _set_raw_checks(self, checked):
+        state = QtCore.Qt.CheckState.Checked if checked else QtCore.Qt.CheckState.Unchecked
+        self.block_table.blockSignals(True)
+        for row in range(self.block_table.rowCount()):
+            item = self.block_table.item(row, 0)
+            if item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable:
+                item.setCheckState(state)
+        self.block_table.blockSignals(False)
+        self._update_raw_summary()
+
+    def _refresh_raw_blocks(self):
+        blocks = self._raw_blocks()
+        entries = raw_export.list_blocks(blocks)
+        self.block_table.blockSignals(True)
+        self.block_table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            name = QTableWidgetItem(entry['block'])
+            name.setCheckState(QtCore.Qt.CheckState.Checked)
+            self.block_table.setItem(row, 0, name)
+            self.block_table.setItem(row, 1, QTableWidgetItem(entry['kind']))
+            self.block_table.setItem(row, 2, QTableWidgetItem(
+                raw_export.describe_shape(blocks[entry['block']])))
+            self.block_table.setItem(row, 3, QTableWidgetItem(''))
+        self.block_table.blockSignals(False)
+        if not self.export_dir_edit.text():
+            self.export_dir_edit.setText(default_export_dir() or get_dialog_dir())
+        self._refresh_raw_estimates()
+        if entries:
+            self.block_table.setCurrentCell(0, 0)
+        self.update_block_display()
+
+    def _refresh_raw_estimates(self):
+        blocks = self._raw_blocks()
+        ext = self._raw_ext()
+        warn = QtGui.QColor(tone_color('warn', self.block_table))
+        checkable = QtCore.Qt.ItemFlag.ItemIsUserCheckable
+        self.block_table.blockSignals(True)
+        for row in range(self.block_table.rowCount()):
+            name = self.block_table.item(row, 0)
+            data = blocks.get(name.text())
+            if data is None:
+                continue
+            self.block_table.item(row, 3).setText(raw_export.describe_estimate(name.text(), data, ext))
+            problem = raw_export.xlsx_problem(data) if ext == 'xlsx' else None
+            items = [self.block_table.item(row, col) for col in range(4)]
+            if problem:
+                if name.flags() & checkable:
+                    name.setData(QtCore.Qt.ItemDataRole.UserRole,
+                                 name.checkState() == QtCore.Qt.CheckState.Checked)
+                name.setCheckState(QtCore.Qt.CheckState.Unchecked)
+                name.setFlags(name.flags() & ~checkable)
+                for item in items:
+                    item.setForeground(warn)
+                    item.setToolTip(problem)
+            else:
+                if not name.flags() & checkable:
+                    name.setFlags(name.flags() | checkable)
+                    if name.data(QtCore.Qt.ItemDataRole.UserRole):
+                        name.setCheckState(QtCore.Qt.CheckState.Checked)
+                    name.setData(QtCore.Qt.ItemDataRole.UserRole, None)
+                for item in items:
+                    item.setData(QtCore.Qt.ItemDataRole.ForegroundRole, None)
+                    item.setToolTip('')
+        self.block_table.blockSignals(False)
+        self._update_raw_summary()
+
+    def _update_raw_summary(self):
+        if self._raw_export_running:
+            return
+        if not self.current_data:
+            set_status(self.raw_status_label, "No file loaded")
+            self.export_button.setEnabled(False)
+            return
+        if not self.block_table.rowCount():
+            set_status(self.raw_status_label, "No exportable blocks in this file")
+            self.export_button.setEnabled(False)
+            return
+        blocks = self._raw_blocks()
+        ext = self._raw_ext()
+        keys = self._raw_selected()
+        total = sum(raw_export.estimate_size(k, blocks[k], ext)[0] for k in keys)
+        set_status(self.raw_status_label,
+                   f"{len(keys)} of {self.block_table.rowCount()} blocks selected, "
+                   f"about {raw_export.format_size(total)}")
+        self.export_button.setEnabled(bool(keys))
+
+    def update_block_display(self):
+        row = self.block_table.currentRow()
+        blocks = self._raw_blocks()
+        self.preview_table.clear()
+        if row < 0 or not blocks:
+            self.preview_table.setRowCount(0)
+            self.preview_table.setColumnCount(0)
+            self.preview_label.setText("No block selected" if self.current_data else "No file loaded")
+            return
+        key = self.block_table.item(row, 0).text()
+        headers, labels, cells, caption = raw_export.preview(blocks[key])
+        self.preview_table.setRowCount(len(cells))
+        self.preview_table.setColumnCount(len(headers))
+        self.preview_table.setHorizontalHeaderLabels(headers)
+        self.preview_table.setVerticalHeaderLabels(labels)
+        for i, line in enumerate(cells):
+            for j, text in enumerate(line):
+                self.preview_table.setItem(i, j, QTableWidgetItem(text))
+        self.preview_table.resizeColumnsToContents()
+        self.preview_label.setText(f"{key}: {caption}")
+
+    def _choose_raw_export_dir(self):
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Choose export folder", self.export_dir_edit.text() or default_save_path(""))
+        if chosen:
+            self.export_dir_edit.setText(chosen)
 
     def export_data(self):
-        if not self.current_data:
+        if not self.current_data or self._raw_export_running:
             return
-        block_key = self.block_combo.currentText()
-        fmt = self.format_combo.currentText()
-        logger.info(f"Exporting {block_key} as {fmt}...")
-
-        filters = {
-            'Excel (.xlsx)': ('Excel Files (*.xlsx)', '.xlsx'),
-            'CSV (.csv)': ('CSV Files (*.csv)', '.csv'),
-            'Text (.txt)': ('Text Files (*.txt)', '.txt'),
-            'NumPy (.npy)': ('NumPy Files (*.npy)', '.npy')
-        }
-        file_filter, extension = filters[fmt]
-
-        original_file = self.current_data['metadata'].get('filename', '')
-        def_name = f"{Path(original_file).stem}_{block_key.replace('/', '_')}{extension}"
-
-        out_file, _ = QFileDialog.getSaveFileName(
-            self, "Save Block Data", default_save_path(def_name), file_filter
-        )
-        if out_file:
-            remember_dialog_dir(out_file)
-
-            data_to_export = self.current_data['blocks'].get(block_key)
-            if (fmt.startswith("Excel") and getattr(data_to_export, "ndim", 0) == 2
-                    and data_to_export.shape[1] > 16384):
-                QMessageBox.warning(
-                    self, "Export Error",
-                    f"This block has {data_to_export.shape[1]} columns, more than the "
-                    f"16384 an .xlsx file can hold. Export it as NumPy (.npy) instead."
-                )
+        keys = self._raw_selected()
+        if not keys:
+            set_status(self.raw_status_label, "Select at least one block")
+            return
+        if not self.export_dir_edit.text().strip():
+            self._choose_raw_export_dir()
+        text = self.export_dir_edit.text().strip()
+        if not text:
+            return
+        folder = Path(text)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.critical(self, "Export Error", f"Cannot write to {folder}: {exc}")
+            return
+        ext = self._raw_ext()
+        blocks = self.current_data['blocks']
+        source_name = self.current_data['metadata'].get('filename', '')
+        labels = self.param_labels_check.isChecked()
+        manifest = self.manifest_check.isChecked()
+        names = raw_export.planned_files(blocks, keys, ext, source_name, labels, manifest)
+        existing = [n for n in names if (folder / n).exists()]
+        if existing:
+            answer = QMessageBox.question(
+                self, "Replace files",
+                f"{len(existing)} of the {len(names)} files already exist in {folder}. Replace them?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                set_status(self.raw_status_label, "Export cancelled")
                 return
-            try:
-            # data_to_export = self.current_data['blocks'].get(block_key)
-            # try:
-                if data_to_export is None:
-                    raise ValueError(f"No data for block: {block_key}")
-                parser = self.block_parsers.get(block_key)
-                if parser is None:
-                    raise ValueError(f"No parser for block: {block_key}")
-                parser.export(data_to_export, Path(out_file), extension[1:])
-                QMessageBox.information(self, "Success", "Block data exported.")
-            except Exception as e:
-                logger.exception("Export error")
-                QMessageBox.critical(self, "Error", f"Failed to export block: {e}")
+        remember_dialog_dir(os.path.join(str(folder), ''))
+        self._raw_export_running = True
+        self.export_button.setEnabled(False)
+        set_status(self.raw_status_label, f"Exporting {len(keys)} blocks to {folder}...")
+        logger.info(f"Raw export of {len(keys)} blocks as .{ext} to {folder}")
+        run_task(raw_export.export_blocks,
+                 (blocks, keys, folder, ext, source_name, self._source_path, labels, manifest),
+                 self._raw_export_done)
+
+    def _raw_export_done(self, worker):
+        self._raw_export_running = False
+        self.export_button.setEnabled(bool(self.current_data) and bool(self._raw_selected()))
+        if worker.error is not None:
+            logger.error(f"Export error: {worker.error}")
+            set_status(self.raw_status_label, f"Export failed: {worker.error}")
+            QMessageBox.critical(self, "Error", f"Failed to export blocks: {worker.error}")
+            return
+        result = worker.result
+        count = len(result['written']) + (1 if result['manifest'] else 0)
+        failures = result['failures']
+        lines = [f"{count} files written to {result['folder']}"]
+        if failures:
+            lines.append(f"{len(failures)} failed:")
+            lines += [f"  {f.get('file') or f['block']}: {f['error']}" for f in failures]
+        if result['warnings']:
+            lines.append("Warnings:")
+            lines += [f"  {w}" for w in result['warnings']]
+        message = "\n".join(lines)
+        if failures:
+            set_status(self.raw_status_label,
+                       f"Export failed for {len(failures)} item(s), {count} files written to {result['folder']}")
+            QMessageBox.warning(self, "Export", message)
+        else:
+            set_status(self.raw_status_label, f"Exported {count} files to {result['folder']}")
+            QMessageBox.information(self, "Success", message)
 
     def operations_export_handler(self, arr: np.ndarray, format_str: str, prefix: str):
         logger.info(f"Operations export: {prefix} as {format_str}")
@@ -791,33 +1014,13 @@ class SINEXParserApp(QMainWindow):
             if matrix_parser is None:
                 QMessageBox.critical(self, "Error", "No parser for matrix export!")
                 return
-            try:
-                matrix_parser.export(arr, Path(out_file), extension[1:])
-                QMessageBox.information(self, "Success", "Data exported.")
-            except Exception as e:
-                logger.exception("Export error")
-                QMessageBox.critical(self, "Error", f"Export fail: {e}")
-        self._notify(f"{orig_file} exported.")
+            run_task(matrix_parser.export, (arr, Path(out_file), extension[1:]),
+                     lambda w: self._operations_export_done(w, orig_file))
 
-    def _refresh_block_combo(self):
-        keys = list(self.current_data['blocks'].keys()) if self.current_data else []
-        previous = self.block_combo.currentText()
-        self.block_combo.blockSignals(True)
-        self.block_combo.clear()
-        self.block_combo.addItems(keys)
-        if previous in keys:
-            self.block_combo.setCurrentText(previous)
-        self.block_combo.blockSignals(False)
-        self.export_button.setEnabled(bool(keys))
-
-    def update_block_display(self):
-        if self.current_data and 'blocks' in self.current_data:
-            block_keys = list(self.current_data['blocks'].keys())
-            if block_keys:
-                display_text = "Blocks detected:\n" + "\n".join(block_keys)
-            else:
-                display_text = "No blocks detected in the file."
+    def _operations_export_done(self, worker, orig_file):
+        if worker.error is not None:
+            logger.error(f"Export error: {worker.error}")
+            QMessageBox.critical(self, "Error", f"Export fail: {worker.error}")
         else:
-            display_text = "No data available."
-
-        self.block_display.setPlainText(display_text)
+            QMessageBox.information(self, "Success", "Data exported.")
+        self._notify(f"{orig_file} exported.")

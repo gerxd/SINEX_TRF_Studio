@@ -5,10 +5,15 @@ from typing import Dict
 
 from ..core import logger, benchmark
 from .parsers import SinexBlockParser, MatrixEstimateParser
+from . import parallel
+
+
+class SinexStructureError(ValueError):
+    pass
 
 
 def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
-                     skip_validation=False, parse_generation=None):
+                     skip_validation=False, parse_generation=None, check_structure=False):
     start_time = time.time()
     logger.info(f"Starting parse of file: {filename.name}")
     gen = parse_generation
@@ -27,12 +32,14 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
     statistics = None
     # streaming state for matrix blocks
     streaming_parser = None
+    open_blocks = []
+    executor = None
 
     try:
-        with open(filename, 'r', encoding='utf-8') as file:
-            for line in file:
+        with open(filename, 'rb') as file:
+            while line := file.readline():
                 total_lines += 1
-                ln = line.rstrip()
+                ln = line.decode('utf-8', errors='replace').rstrip()
 
                 if len(ln) == 0:
                     continue
@@ -43,6 +50,7 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
                     cur_block = ln[1:].strip()
                     cur_block_data = []
                     streaming_parser = None
+                    open_blocks.append(cur_block)
 
                     if cur_block in ['SOLUTION/EPOCHS']:
                         if skip_epochs_block: 
@@ -63,11 +71,28 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
                                 streaming_parser = parser
                                 stream_token = benchmark.begin(f'stream {cur_block}', gen)
                                 logger.info(f"Stream-parsing {cur_block} ({sz}x{sz})")
+                                block_start = file.tell()
+                                large = parallel.is_large(file, block_start)
+                                file.seek(block_start)
+                                if large and parallel.ENABLED:
+                                    if executor is None:
+                                        executor = parallel.make_executor()
+                                    lines, physical, fortran = parallel.stream_block(
+                                        file, filename, parser._matrix, sinex_data['header'], executor)
+                                    parser._stream_lines += lines
+                                    total_lines += physical
+                                    if fortran:
+                                        logger.info("File contains FORTRAN scientific notation")
                             else:
                                 streaming_parser = None
 
                 elif ln.startswith('-'):
                     logger.info(f"End of reading block: {cur_block}")
+                    if check_structure and not open_blocks:
+                        logger.error(f"Unmatched block end at line {total_lines}")
+                        raise SinexStructureError("Invalid SINEX block structure!")
+                    if open_blocks:
+                        open_blocks.pop()
 
                     if streaming_parser is not None and streaming_parser.is_streaming:
                         parsed = streaming_parser.finalize_stream()
@@ -102,6 +127,12 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
                             streaming_parser.feed_line(ln)
                         else:
                             cur_block_data.append(ln)
+        if check_structure and open_blocks:
+            logger.error("Unclosed blocks: " + ", ".join(open_blocks))
+            raise SinexStructureError("Invalid SINEX block structure!")
+        est = sinex_data['blocks'].get('SOLUTION/ESTIMATE')
+        if est and any(p.get('index') != i for i, p in enumerate(est, 1)):
+            logger.warning("SOLUTION/ESTIMATE is not in INDEX order 1 to n, so parameters will not line up with the covariance rows.")
         logger.info(f"Finished parse of {filename.name} in {time.time()-start_time:.3f}s.")
         logger.info(f"Total lines read: {total_lines}, blocks: {len(sinex_data['blocks'])}.")
         benchmark.end(parse_token)
@@ -112,3 +143,6 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
         benchmark.cancel(parse_token)
         logger.exception("Parsing error")
         raise
+    finally:
+        if executor is not None:
+            executor.terminate()

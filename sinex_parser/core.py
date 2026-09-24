@@ -21,6 +21,7 @@ class ColoredFormatter(logging.Formatter):
 
 try:
     sys.stderr.reconfigure(errors='replace')
+    sys.stdout.reconfigure(errors='replace')
 except Exception:
     pass
 
@@ -451,27 +452,3 @@ def align_apriori_info_matrix(src: np.ndarray, target_dim: int) -> np.ndarray:
             f"Apriori covariance bigger ({curr_dim}x{curr_dim}); slicing to {target_dim} before inversion."
         )
     return new_mat
-
-###############################################################################
-# 3) File Validator
-###############################################################################
-class SinexFileValidator:
-    def validate_block_structure(self, filename: Path) -> bool:
-        blk_stack = []
-        try:
-            with open(filename, 'r') as f:
-                for line_num, line in enumerate(f, 1):
-                    if line.startswith('+'):
-                        blk_stack.append(line[1:].strip())
-                    elif line.startswith('-'):
-                        if not blk_stack:
-                            logger.error(f"Unmatched block end at line {line_num}")
-                            return False
-                        blk_stack.pop()
-            if blk_stack:
-                logger.error("Unclosed blocks: " + ", ".join(blk_stack))
-                return False
-            return True
-        except Exception as e:
-            logger.error(f"Could not open file {filename}: {e}")
-            return False

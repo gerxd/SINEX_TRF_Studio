@@ -23,6 +23,19 @@ class SinexBlockParser(ABC):
     def export(self, data: Any, filename: Path, format: str):
         pass
 
+
+def plain_records(df):
+    columns = []
+    for name in df.columns:
+        values = df[name].to_numpy()
+        if values.dtype.kind not in 'biuf':
+            values = np.array(['' if v is None else str(v) for v in values], dtype=str)
+        columns.append((str(name), values))
+    out = np.empty(len(df), dtype=[(name, values.dtype) for name, values in columns])
+    for name, values in columns:
+        out[name] = values
+    return out
+
 ###############################################################################
 # 2) Parser Classes
 ###############################################################################
@@ -88,9 +101,9 @@ class SiteIDParser(SinexBlockParser):
         # conv to decimal
         decimal = abs(deg) + mn / 60.0 + sc / 3600.0
     #handle negative coordinates
-        if deg < 0:
+        if d_str.strip().startswith('-'):
             decimal = -decimal
-        elif not is_lat and deg > 180.0:
+        elif not is_lat and decimal > 180.0:
             # conv longitude > 180 to negative (western hemisphere)
             decimal = decimal - 360.0
 
@@ -105,7 +118,7 @@ class SiteIDParser(SinexBlockParser):
         elif format == 'txt':
             df.to_csv(filename, index=False, sep='\t')
         elif format == 'npy':
-            np.save(filename, df.to_records(index=False))
+            np.save(filename, plain_records(df))
         else:
             raise ValueError(f"Unsupported export: {format}")
         logger.info(f"Exported SITE/ID data => {filename}")
@@ -235,11 +248,13 @@ class MatrixEstimateParser(SinexBlockParser):
         return matrix
 
     def export(self, data: np.ndarray, filename: Path, format: str):
-        df = pd.DataFrame(data)
         if format == 'xlsx':
-            df.to_excel(filename, index=False, header=False)
+            pd.DataFrame(data).to_excel(filename, index=False, header=False)
         elif format == 'csv':
-            df.to_csv(filename, index=False, header=False, float_format='%.17g')
+            if np.isnan(data).any():
+                pd.DataFrame(data).to_csv(filename, index=False, header=False, float_format='%.17g')
+            else:
+                np.savetxt(filename, data, fmt='%.17g', delimiter=',')
         elif format == 'txt':
             np.savetxt(filename, data, fmt='%.17g', delimiter='\t')
         elif format == 'npy':
@@ -299,11 +314,14 @@ class ParameterParser(SinexBlockParser):
 
     def parse(self, block_data: List[str]) -> List[dict]:
         results = []
+        irregular = 0
         for line in block_data:
             ln = line.strip()
             if not ln or ln.startswith('*'):
                 continue
             tokens = ln.split()
+            if len(tokens) != 10:
+                irregular += 1
             if len(tokens) < 9:
                 continue
             try:
@@ -348,6 +366,8 @@ class ParameterParser(SinexBlockParser):
                 'value': val_f,
                 'sigma': sig_f,
             })
+        if irregular:
+            logger.warning(f"{irregular} parameter lines do not have 10 fields; values may be read from the wrong column.")
         return results
 
     def export(self, data: List[dict], filename: Path, format: str):
@@ -359,7 +379,7 @@ class ParameterParser(SinexBlockParser):
         elif format == 'txt':
             df.to_csv(filename, index=False, sep='\t')
         elif format == 'npy':
-            np.save(filename, df.to_records(index=False))
+            np.save(filename, plain_records(df))
         else:
             raise ValueError(f"Unsupported export format: {format}")
         logger.info(f"Exported param data => {filename}")

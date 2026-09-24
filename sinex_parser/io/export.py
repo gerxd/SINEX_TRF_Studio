@@ -2,6 +2,9 @@
 import numpy as np
 import pandas as pd
 
+XLSX_MAX_CELLS = 5_000_000
+XLSX_TOO_LARGE = "Too large for .xlsx. Use .npy, .csv or .txt."
+
 FORMAT_EXTENSIONS = {
     'Excel (.xlsx)': '.xlsx',
     'CSV (.csv)': '.csv',

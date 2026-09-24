@@ -4,6 +4,15 @@ import numpy as np
 from . import datum
 
 
+def helmert_names(size):
+    if size == 7:
+        return ["tx", "ty", "tz", "ds", "ex", "ey", "ez"]
+    if size == 14:
+        return ["tx", "ty", "tz", "ds", "ex", "ey", "ez",
+                "tx_v", "ty_v", "tz_v", "ds_v", "ex_v", "ey_v", "ez_v"]
+    return [f"p{i + 1}" for i in range(size)]
+
+
 def build_stats_report(filename, var_factor, filter_tag, sigma_theta, cross_corr,
                        helmert, sol, filtered_episodes_info, filtering_active) -> str:
     # plain text report -> collect metrics already computed by the pipeline
@@ -60,14 +69,7 @@ def build_stats_report(filename, var_factor, filter_tag, sigma_theta, cross_corr
     hp = helmert
     if hp is not None:
         flat = np.asarray(hp, dtype=float).flatten()
-        if flat.size == 7:
-            names = ["tx", "ty", "tz", "ds", "ex", "ey", "ez"]
-        elif flat.size == 14:
-            names = ["tx", "ty", "tz", "ds", "ex", "ey", "ez",
-                     "tx_v", "ty_v", "tz_v", "ds_v", "ex_v", "ey_v", "ez_v"]
-        else:
-            names = [f"p{i + 1}" for i in range(flat.size)]
-        for name, val in zip(names, flat):
+        for name, val in zip(helmert_names(flat.size), flat):
             add(f"  {name}: {val:.6e}")
     else:
         add("  not computed")

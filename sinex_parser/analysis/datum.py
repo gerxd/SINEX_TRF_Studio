@@ -572,7 +572,7 @@ def sigma_theta_from_covariance(sol, Cx, episodes_to_exclude):
 
     negative = int(np.count_nonzero(diag < 0.0))
     if negative:
-        logger.info(f"WARNING: {negative} of {diag.size} Σθ diagonal entries are negative, the solution is degenerate and Helmert parameters will be NaN")
+        logger.warning(f"WARNING: {negative} of {diag.size} Σθ diagonal entries are negative, the solution is degenerate and Helmert parameters will be NaN")
     return SigmaThetaResult(sigma_theta, filtered_sol, row_idx, n_episodes)
 
 

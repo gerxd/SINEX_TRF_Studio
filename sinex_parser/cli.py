@@ -1,5 +1,6 @@
 # cli.py
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -63,8 +64,27 @@ def _applied_filter(args):
     return datum.AppliedFilter(True, args.pos_threshold, args.vel_threshold, False, frozenset())
 
 
+def _num(value):
+    value = float(value)
+    return value if np.isfinite(value) else None
+
+
+def _print_json(summary):
+    print(json.dumps(summary, indent=2))
+
+
+def _formats(text):
+    formats = [f.strip().lstrip(".").lower() for f in text.split(",") if f.strip()]
+    unknown = [f for f in formats if f not in ("xlsx", "csv", "txt", "npy")]
+    if unknown:
+        raise CliError(f"unknown format: {', '.join(unknown)}")
+    return formats
+
+
 def _write(matrix, out_dir, stem, prefix, tag, formats):
     written = []
+    if "xlsx" in formats and np.size(matrix) > export.XLSX_MAX_CELLS:
+        raise CliError(export.XLSX_TOO_LARGE)
     for fmt in formats:
         extension = f".{fmt}"
         out_file = ensure_suffix(str(Path(out_dir) / f"{stem}_{prefix}{tag}{extension}"), extension)
@@ -76,6 +96,22 @@ def _write(matrix, out_dir, stem, prefix, tag, formats):
 def cmd_parse(args):
     data = _load(args.file)
     blocks = data["blocks"]
+    if args.json:
+        summary = {"command": "parse", "version": __version__,
+                   "file": data["metadata"]["filename"], "blocks": {}}
+        for name, value in blocks.items():
+            if isinstance(value, np.ndarray):
+                summary["blocks"][name] = {"shape": list(value.shape), "dtype": str(value.dtype)}
+            elif isinstance(value, list):
+                summary["blocks"][name] = {"entries": len(value)}
+            else:
+                summary["blocks"][name] = {"value": _num(value) if isinstance(value, (int, float)) else repr(value)}
+        sol = blocks.get("SOLUTION/ESTIMATE")
+        if sol:
+            summary["parameters"] = len(sol)
+            summary["station_episodes"] = len(datum.parse_station_coordinates(sol))
+        _print_json(summary)
+        return 0
     print(f"file: {data['metadata']['filename']}")
     print(f"blocks: {len(blocks)}")
     for name in blocks:
@@ -110,7 +146,7 @@ def cmd_datum(args):
     stem = Path(data["metadata"]["filename"]).stem
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    formats = [f.strip().lstrip(".") for f in args.formats.split(",") if f.strip()]
+    formats = _formats(args.formats)
 
     written = []
     written += _write(result.sigma_theta, out_dir, stem, "sigma_theta", tag, formats)
@@ -134,6 +170,20 @@ def cmd_datum(args):
             out_dir, stem, tag, result.sigma_theta, cross_corr, helmert,
             datum.filter_disp(applied, details))
 
+    if args.json:
+        diag = np.diag(result.sigma_theta)
+        _print_json({
+            "command": "datum", "version": __version__,
+            "file": data["metadata"]["filename"],
+            "filtered": datum.is_filtered(applied, details),
+            "episodes_excluded": len(details),
+            "episodes_used": result.n_episodes,
+            "negative_sigma_theta_diagonal": int(np.count_nonzero(diag < 0.0)),
+            "helmert": {name: _num(v) for name, v in
+                        zip(reporting.helmert_names(helmert.size), helmert.ravel())},
+            "written": [str(name) for name in written],
+        })
+        return 0
     print(f"episodes excluded: {len(details)}")
     print(f"episodes used: {result.n_episodes}")
     print(f"sigma theta: {result.sigma_theta.shape[0]}x{result.sigma_theta.shape[1]}")
@@ -165,7 +215,8 @@ def cmd_normal(args):
     apr_est = blocks.get("SOLUTION/APRIORI")
     u = dx = None
     if not apr_est:
-        print("no SOLUTION/APRIORI block, skipping the u vector and the recomputation check")
+        if not args.json:
+            print("no SOLUTION/APRIORI block, skipping the u vector and the recomputation check")
     elif N.shape[0] != len(est_data):
         raise CliError("dimension mismatch between the normal matrix and the parameter count")
     else:
@@ -174,7 +225,7 @@ def cmd_normal(args):
     stem = Path(data["metadata"]["filename"]).stem
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    formats = [f.strip().lstrip(".") for f in args.formats.split(",") if f.strip()]
+    formats = _formats(args.formats)
 
     written = _write(N, out_dir, stem, "NormalMatrix", "", formats)
     if u is not None:
@@ -182,13 +233,27 @@ def cmd_normal(args):
     if apriori is not None:
         written += _write(apriori, out_dir, stem, "Covariance_Apriori_Matrix", "", formats)
 
-    print(f"variance factor: {var_factor}")
-    print(f"N: {N.shape[0]}x{N.shape[1]}")
-    if u is not None:
-        for line in normal.recomputation_check(N, u, dx):
-            print(line)
+    check = normal.recomputation_check(N, u, dx) if u is not None else None
+    rank_n = elapsed = None
     if args.rank:
         rank_n, elapsed = normal.rank_of_normal_matrix(N)
+    if args.json:
+        summary = {"command": "normal", "version": __version__,
+                   "file": data["metadata"]["filename"],
+                   "variance_factor": _num(var_factor), "n": N.shape[0],
+                   "recomputation_check": [ln.strip() for ln in check] if check else None,
+                   "written": [str(name) for name in written]}
+        if rank_n is not None:
+            summary["rank"] = int(rank_n)
+            summary["rank_deficiency"] = N.shape[0] - int(rank_n)
+        _print_json(summary)
+        return 0
+    print(f"variance factor: {var_factor}")
+    print(f"N: {N.shape[0]}x{N.shape[1]}")
+    if check is not None:
+        for line in check:
+            print(line)
+    if rank_n is not None:
         print(f"rank(N) = {rank_n} of {N.shape[0]}, deficiency {N.shape[0] - int(rank_n)}, {elapsed:.3f} s")
     for name in written:
         print(f"wrote {name}")
@@ -206,6 +271,7 @@ def build_parser():
 
     p = sub.add_parser("parse", help="report the blocks a file contains")
     p.add_argument("file")
+    p.add_argument("--json", action="store_true", help="print the summary as JSON")
     p.set_defaults(func=cmd_parse)
 
     p = sub.add_parser("datum", help="sigma theta, cross correlations and Helmert parameters")
@@ -219,6 +285,7 @@ def build_parser():
                    help="velocity sigma threshold in metres per year")
     p.add_argument("--no-filter", action="store_true", help="use every episode")
     p.add_argument("--plots", action="store_true", help="also save figures as png")
+    p.add_argument("--json", action="store_true", help="print the summary as JSON")
     p.set_defaults(func=cmd_datum)
 
     p = sub.add_parser("normal", help="normal matrix, u vector and the recomputation check")
@@ -230,6 +297,7 @@ def build_parser():
                    help="required for files with no SOLUTION/STATISTICS block")
     p.add_argument("--rank", action="store_true",
                    help="also compute rank(N) by SVD, which costs O(n^3)")
+    p.add_argument("--json", action="store_true", help="print the summary as JSON")
     p.set_defaults(func=cmd_normal)
 
     return parser
@@ -246,6 +314,9 @@ def main(argv=None):
     except (datum.DatumError, normal.NormalMatrixError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 3
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

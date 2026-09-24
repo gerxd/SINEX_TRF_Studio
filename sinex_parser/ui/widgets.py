@@ -7,10 +7,11 @@ import numpy as np
 import pandas as pd
 import logging
 import html
+import re
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Any, Callable, Tuple
 
-from PyQt6.QtGui import QFont, QPixmap, QImage, QColor
+from PyQt6.QtGui import QFont, QPixmap, QImage, QColor, QPalette, QTextCursor, QTextCharFormat, QTextBlockFormat
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QMessageBox, QComboBox, QFrame, QSplitter,
@@ -19,7 +20,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QDoubleSpinBox, QRadioButton, QScrollArea, QLineEdit,
     QSizePolicy, QGroupBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QStandardPaths
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QStandardPaths, QObject
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 import pyqtgraph as pg
@@ -85,23 +86,126 @@ class ParserWorker(QThread):
         self.skip_validation = skip_validation
         self.result_data = None
         self.parse_generation = None
+        self.structure_error = False
     def run(self):
         try:
             self.result_data = reader.parse_sinex_file(
                 self.filename, self.block_parsers, self.skip_epochs_block,
                 self.skip_validation, self.parse_generation,
+                check_structure=not self.skip_validation,
             )
             self.finished.emit()
         except Exception as e:
+            self.structure_error = isinstance(e, reader.SinexStructureError)
             self.error.emit(str(e))
+
+_TASKS = set()
+
+
+class TaskWorker(QThread):
+    def __init__(self, func, *args):
+        super().__init__()
+        self.func = func
+        self.args = args
+        self.result = None
+        self.error = None
+
+    def run(self):
+        try:
+            self.result = self.func(*self.args)
+        except Exception as exc:
+            self.error = exc
+
+
+def run_task(func, args, on_done):
+    worker = TaskWorker(func, *args)
+    _TASKS.add(worker)
+    QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+
+    def finish():
+        _TASKS.discard(worker)
+        QApplication.restoreOverrideCursor()
+        on_done(worker)
+
+    worker.finished.connect(finish)
+    worker.start()
+    return worker
+
+
+def wait_for_tasks():
+    while _TASKS:
+        for worker in list(_TASKS):
+            worker.wait()
+        QApplication.processEvents()
 
 ###############################################################################
 #Custom Logger Widget
 ###############################################################################
+TONES = {
+    "ok": ("#15803d", "#4ade80"),
+    "warn": ("#b45309", "#fbbf24"),
+    "error": ("#c2410c", "#fb923c"),
+    "muted": ("#6b7280", "#9ca3af"),
+}
+_OK_RE = re.compile(r"^(PASS|Success|Exported|Finished|Image exported)|passed check|\bcomplete\b|calculated$")
+_WARN_RE = re.compile(r"^(WARNING|FAIL|Export failed)| error: |error occurred|Missing$|\(custom\)$")
+
+
+def tone_of(text, levelno=logging.INFO):
+    if text.startswith("===="):
+        return None
+    if levelno >= logging.ERROR:
+        return "error"
+    if levelno >= logging.WARNING or _WARN_RE.search(text):
+        return "warn"
+    if _OK_RE.search(text):
+        return "ok"
+    return None
+
+
+def tone_color(tone, widget):
+    dark = widget.palette().color(QPalette.ColorRole.Text).lightness() > 128
+    return TONES[tone][dark]
+
+
+def set_status(label, text, base=""):
+    label.setText(text)
+    tone = tone_of(text)
+    label.setStyleSheet(base + (f" color: {tone_color(tone, label)};" if tone else ""))
+
+
+class _LogSink(QObject):
+    line = pyqtSignal(str, str)
+
+    def __init__(self, widget):
+        super().__init__()
+        self.widget = widget
+        self.line.connect(self.write, Qt.ConnectionType.QueuedConnection)
+
+    def write(self, msg, tone):
+        w = self.widget
+        if w is None:
+            return
+        bar = w.verticalScrollBar()
+        at_end = bar.value() >= bar.maximum()
+        fmt = QTextCharFormat()
+        if tone:
+            fmt.setForeground(QColor(tone_color(tone, w)))
+        doc = w.document()
+        cursor = QTextCursor(doc)
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        if not doc.isEmpty():
+            cursor.insertBlock(QTextBlockFormat(), fmt)
+        cursor.insertText(msg, fmt)
+        if at_end:
+            bar.setValue(bar.maximum())
+
+
 class QPlainTextEditLogger(logging.Handler):
     def __init__(self, text_widget):
         super().__init__()
         self.text_widget = text_widget
+        self._sink = _LogSink(text_widget)
         self.setLevel(logging.INFO)
         try:
             self.text_widget.destroyed.connect(self._on_widget_destroyed)
@@ -114,20 +218,17 @@ class QPlainTextEditLogger(logging.Handler):
         except Exception:
             pass
         self.text_widget = None
+        self._sink.widget = None
 
     def emit(self, record):
         #gui updates on main thread
         msg = self.format(record)
-        w = self.text_widget
-        if w is None:
+        if self.text_widget is None:
             return
-        from PyQt6.QtCore import QTimer
-        def _append():
-            try:
-                w.appendPlainText(msg)
-            except Exception:
-                pass
-        QTimer.singleShot(0, _append)
+        try:
+            self._sink.line.emit(msg, tone_of(record.getMessage(), record.levelno) or "")
+        except Exception:
+            pass
 
 def make_section_header(title: str, layout):
     label = QLabel(title)
@@ -175,6 +276,7 @@ class MatrixVisualizerWidget(QWidget):
         self._pg_title_label = None
         self._pg_info_label = None
         self._pg_hover_label = None
+        self._generation = 0
         self._setup_ui()
 
     def _setup_ui(self):
@@ -327,6 +429,14 @@ class MatrixVisualizerWidget(QWidget):
     def setup_data(self, blocks: dict):
         # for asynchronous processing
         set_current_figure(self)
+        self._generation += 1
+        self._disconnect_pg_hover()
+        for win in (self._pg_img_win, self._pg_plot_win):
+            if win is not None:
+                win.close()
+        self._pg_img_win = self._pg_plot_win = self._pg_img_item = None
+        self._pg_hist_widget = self._pg_view = None
+        self._pg_title_label = self._pg_info_label = self._pg_hover_label = None
         self._pg_hover_source = None
         self._pg_hover_meta = None
         self.blocks = blocks
@@ -339,7 +449,7 @@ class MatrixVisualizerWidget(QWidget):
         self.pg_plot_button.setEnabled(has_matrix)
         self._update_plot_buttons_state()
 
-        self.info_label.setText(
+        set_status(self.info_label, 
             "Select a matrix and plot type, then choose a plotting option."
             if has_matrix
             else "No plottable matrix data found in this file."
@@ -410,7 +520,7 @@ class MatrixVisualizerWidget(QWidget):
             if reply == QMessageBox.StandardButton.No:
                 return
 
-        self.info_label.setText(f"Generating '{plot_type}' for '{selected_key}'...")
+        set_status(self.info_label, f"Generating '{plot_type}' for '{selected_key}'...")
         QApplication.processEvents()  # force ui update
         set_current_figure(self)
         try:
@@ -430,25 +540,11 @@ class MatrixVisualizerWidget(QWidget):
                 fig.tight_layout()
                 self._format_cbar_heatmap(ax)
             elif plot_type == "Eigenvalue Distribution":
-                vals = np.linalg.eigvals(data)
-                real_vals = np.real(vals)
-                
-                fig, ax = plt.subplots(figsize=(16, 10))
-                set_current_figure(self, fig)
-                bars = ax.bar(range(len(real_vals)), real_vals, color="#4c72b0")
-                ax.axhline(0.0, color="black", linewidth=0.8)
-                ax.set_xlabel("Eigenvalue Index")
-                ax.set_ylabel("Eigenvalue")
-                ax.set_title(f"Eigenvalue Distribution for {selected_key}\nShape: {data.shape}")
-                
-                # Add value labels on bars for smaller datasets
-                if len(real_vals) <= 20:
-                    ax.bar_label(bars, fmt="%.4g", padding=3)
-                
-                fig.tight_layout()
-                add_plot_footer(fig)
-                plt.show()
-                self.info_label.setText("Plot generation complete. Select another plot or load a new file.")
+                self.plot_button.setEnabled(False)
+                self.pg_plot_button.setEnabled(False)
+                gen = self._generation
+                run_task(np.linalg.eigvals, (data,),
+                         lambda w: self._show_eigen_plot(w, gen, selected_key, data.shape))
                 return
 
             ax.set_title(title)
@@ -457,11 +553,45 @@ class MatrixVisualizerWidget(QWidget):
 
             plt.show()
 
-            self.info_label.setText("Plot generation complete. Select another plot or load a new file.")
+            set_status(self.info_label, "Plot generation complete. Select another plot or load a new file.")
 
         except Exception as e:
             logger.exception("Plotting error")
-            self.info_label.setText(f"An error occurred during plotting: {e}")
+            set_status(self.info_label, f"An error occurred during plotting: {e}")
+            QMessageBox.critical(self, "Plotting Error", f"Failed to generate plot: {e}")
+
+    def _show_eigen_plot(self, worker, gen, selected_key, shape):
+        self.plot_button.setEnabled(self._has_plottable_matrix)
+        self._update_plot_buttons_state()
+        if gen != self._generation:
+            logger.info("Ignoring eigenvalues computed for a previous file.")
+            return
+        try:
+            if worker.error is not None:
+                raise worker.error
+            vals = worker.result
+            real_vals = np.real(vals)
+            
+            fig, ax = plt.subplots(figsize=(16, 10))
+            set_current_figure(self, fig)
+            bars = ax.bar(range(len(real_vals)), real_vals, color="#4c72b0")
+            ax.axhline(0.0, color="black", linewidth=0.8)
+            ax.set_xlabel("Eigenvalue Index")
+            ax.set_ylabel("Eigenvalue")
+            ax.set_title(f"Eigenvalue Distribution for {selected_key}\nShape: {shape}")
+            
+            # Add value labels on bars for smaller datasets
+            if len(real_vals) <= 20:
+                ax.bar_label(bars, fmt="%.4g", padding=3)
+            
+            fig.tight_layout()
+            add_plot_footer(fig)
+            plt.show()
+            set_status(self.info_label, "Plot generation complete. Select another plot or load a new file.")
+
+        except Exception as e:
+            logger.exception("Plotting error")
+            set_status(self.info_label, f"An error occurred during plotting: {e}")
             QMessageBox.critical(self, "Plotting Error", f"Failed to generate plot: {e}")
 
     @staticmethod
@@ -599,7 +729,7 @@ class MatrixVisualizerWidget(QWidget):
             QMessageBox.warning(self, "No Data", "Selected matrix data is not available.")
             return
 
-        self.info_label.setText(
+        set_status(self.info_label, 
             f"Rendering '{plot_type}' for '{selected_key}' (PyQtGraph)"
         )
         QApplication.processEvents()
@@ -665,30 +795,52 @@ class MatrixVisualizerWidget(QWidget):
 
             else:
                 self._disconnect_pg_hover()
-                vals = np.linalg.eigvalsh(A)
-                v = np.real(vals)
-                y, x = np.histogram(v, bins=150)
-                x_centers = 0.5 * (x[:-1] + x[1:])
+                self.plot_button.setEnabled(False)
+                self.pg_plot_button.setEnabled(False)
+                gen = self._generation
+                run_task(np.linalg.eigvalsh, (A,),
+                         lambda w: self._show_eigen_plot_pg(w, gen, selected_key))
+                return
 
-                self._pg_plot_win = pg.plot(
-                    x_centers,
-                    y,
-                    pen=None,
-                    symbol=None,
-                    title=f"Eigenvalue Distribution — {selected_key}",
-                )
-                self._pg_plot_win.setLabel("left", "Frequency")
-                self._pg_plot_win.setLabel("bottom", "Eigenvalue")
-                bar = pg.BarGraphItem(x=x_centers, height=y, width=x[1] - x[0])
-                self._pg_plot_win.addItem(bar)
-                self._pg_title_label = None
-                self._pg_info_label = None
-                self._pg_hover_label = None
-
-            self.info_label.setText("PyQtGraph rendering complete.")
+            set_status(self.info_label, "PyQtGraph rendering complete.")
         except Exception as e:
             logger.exception("PyQtGraph plotting error")
-            self.info_label.setText(f"PyQtGraph plotting error: {e}")
+            set_status(self.info_label, f"PyQtGraph plotting error: {e}")
+            QMessageBox.critical(self, "PyQtGraph Error", f"Failed to render with PyQtGraph: {e}")
+
+    def _show_eigen_plot_pg(self, worker, gen, selected_key):
+        self.plot_button.setEnabled(self._has_plottable_matrix)
+        self._update_plot_buttons_state()
+        if gen != self._generation:
+            logger.info("Ignoring eigenvalues computed for a previous file.")
+            return
+        try:
+            if worker.error is not None:
+                raise worker.error
+            vals = worker.result
+            v = np.real(vals)
+            y, x = np.histogram(v, bins=150)
+            x_centers = 0.5 * (x[:-1] + x[1:])
+
+            self._pg_plot_win = pg.plot(
+                x_centers,
+                y,
+                pen=None,
+                symbol=None,
+                title=f"Eigenvalue Distribution — {selected_key}",
+            )
+            self._pg_plot_win.setLabel("left", "Frequency")
+            self._pg_plot_win.setLabel("bottom", "Eigenvalue")
+            bar = pg.BarGraphItem(x=x_centers, height=y, width=x[1] - x[0])
+            self._pg_plot_win.addItem(bar)
+            self._pg_title_label = None
+            self._pg_info_label = None
+            self._pg_hover_label = None
+
+            set_status(self.info_label, "PyQtGraph rendering complete.")
+        except Exception as e:
+            logger.exception("PyQtGraph plotting error")
+            set_status(self.info_label, f"PyQtGraph plotting error: {e}")
             QMessageBox.critical(self, "PyQtGraph Error", f"Failed to render with PyQtGraph: {e}")
 
     def save_full_res_image(self):
@@ -748,7 +900,7 @@ class MatrixVisualizerWidget(QWidget):
         remember_dialog_dir(fname)
 
         original_text = self.info_label.text()
-        self.info_label.setText(f"Exporting {n}×{m} image to {Path(fname).name}...")
+        set_status(self.info_label, f"Exporting {n}×{m} image to {Path(fname).name}...")
         QApplication.processEvents()
 
         try:
@@ -795,7 +947,7 @@ class MatrixVisualizerWidget(QWidget):
 
             elapsed = time.time() - t_start # metrics
             
-            self.info_label.setText(f"Image exported to {Path(fname).name} ({elapsed:.1f}s)")
+            set_status(self.info_label, f"Image exported to {Path(fname).name} ({elapsed:.1f}s)")
             logger.info(
                 f"Image export completed in {elapsed:.1f}s"
             )
@@ -809,12 +961,12 @@ class MatrixVisualizerWidget(QWidget):
                 "• Using a system with more RAM"
             )
             logger.error(f"MemoryError during image export: {n}×{m} matrix")
-            self.info_label.setText("Export failed: insufficient memory")
+            set_status(self.info_label, "Export failed: insufficient memory")
             QMessageBox.critical(self, "Memory Error", error_msg)
             
         except Exception as e:
             logger.exception("Full-resolution image export error")
-            self.info_label.setText(f"Export failed: {type(e).__name__}")
+            set_status(self.info_label, f"Export failed: {type(e).__name__}")
             QMessageBox.critical(
                 self, "Export Error",
                 f"Failed to export image:\n\n{type(e).__name__}: {e}"
@@ -823,7 +975,7 @@ class MatrixVisualizerWidget(QWidget):
         finally:
             if 'original_text' in locals():
                 from PyQt6.QtCore import QTimer
-                QTimer.singleShot(3000, lambda: self.info_label.setText(original_text))
+                QTimer.singleShot(3000, lambda: set_status(self.info_label, original_text))
 
 class StationsWidget(QWidget):
     def __init__(self, parent=None):
@@ -1217,6 +1369,7 @@ class OperationsWidget(QWidget):
         self._apriori_matrix = None
         self._u_vector = None
         self._dx_vector = None
+        self._generation = 0
 
         self._setup_ui()
 
@@ -1304,11 +1457,34 @@ class OperationsWidget(QWidget):
         layout.addLayout(export_line)
 
     def reset_for_new_file(self):
+        self._generation += 1
         self._normal_matrix = None
         self._apriori_matrix = None
         self._u_vector = None
         self._dx_vector = None
         self.rank_btn.setEnabled(False)
+
+    def _set_busy(self, busy):
+        for btn in (self.compute_normal_btn, self.compute_u_btn, self.ver_btn, self.export_btn):
+            btn.setEnabled(not busy)
+        self.rank_btn.setEnabled(not busy and self._normal_matrix is not None)
+
+    def _start(self, func, args, on_done):
+        gen = self._generation
+        self._set_busy(True)
+
+        def done(worker):
+            self._set_busy(False)
+            if gen != self._generation:
+                logger.info("Ignoring a result computed for a previous file.")
+                return
+            if worker.error is not None and not isinstance(worker.error, normal_math.NormalMatrixError):
+                logger.error(f"Computation failed: {worker.error}")
+                QMessageBox.critical(self, "Error", str(worker.error))
+                return
+            on_done(worker)
+
+        run_task(func, args, done)
     
     _RANK_WARN_DIM = 3000
     _RANK_SECONDS_AT_2500 = 1.73
@@ -1324,8 +1500,7 @@ class OperationsWidget(QWidget):
                 self, "Compute Rank of N",
                 f"Rank is computed by singular value decomposition. For {N.shape[0]} "
                 f"parameters this is expected to take the order of "
-                f"{minutes:.0f} minutes, during which the window will not "
-                f"respond.{chr(10)}{chr(10)}Proceed?",
+                f"{minutes:.0f} minutes.{chr(10)}{chr(10)}Proceed?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
             )
             if answer != QMessageBox.StandardButton.Yes:
@@ -1333,11 +1508,10 @@ class OperationsWidget(QWidget):
         self.log_text.appendPlainText(
             f"Computing rank of a {N.shape[0]}x{N.shape[0]} matrix by SVD, this may take a while."
         )
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            rank_n, elapsed = normal_math.rank_of_normal_matrix(N)
-        finally:
-            QApplication.restoreOverrideCursor()
+        self._start(normal_math.rank_of_normal_matrix, (N,), lambda w: self._rank_done(w, N))
+
+    def _rank_done(self, worker, N):
+        rank_n, elapsed = worker.result
         deficiency = N.shape[0] - int(rank_n)
         self.log_text.appendPlainText(
             f"rank(N) = {rank_n} of {N.shape[0]}, deficiency {deficiency}, {elapsed:.3f} s"
@@ -1366,13 +1540,16 @@ class OperationsWidget(QWidget):
             apr_key = "SOLUTION/MATRIX_APRIORI U COVA"
             apr_data = parent_app.current_data['blocks'].get(apr_key)
 
-        try:
-            N, self._apriori_matrix = normal_math.build_normal_matrix(
-                Cov_final, var_factor, apr_data, apr_key)
-        except normal_math.NormalMatrixError as exc:
+        self._start(normal_math.build_normal_matrix, (Cov_final, var_factor, apr_data, apr_key),
+                    lambda w: self._normal_done(w, t0, normal_bench))
+
+    def _normal_done(self, worker, t0, normal_bench):
+        parent_app = self.window()
+        if worker.error is not None:
             benchmark.cancel(normal_bench)
-            QMessageBox.critical(self, "Error", str(exc))
+            QMessageBox.critical(self, "Error", str(worker.error))
             return
+        N, self._apriori_matrix = worker.result
 
         self._normal_matrix = N
         # new N -> clear past data
@@ -1426,8 +1603,12 @@ class OperationsWidget(QWidget):
         QMessageBox.information(self, "Success", "u = N*(Xest - Xapr) computed.")
 
     def reverse_verify(self):
-        for line in normal_math.recomputation_check(
-                self._normal_matrix, self._u_vector, self._dx_vector):
+        self._start(normal_math.recomputation_check,
+                    (self._normal_matrix, self._u_vector, self._dx_vector),
+                    self._verify_done)
+
+    def _verify_done(self, worker):
+        for line in worker.result:
             self.log_text.appendPlainText(line)
 
 
@@ -1484,6 +1665,9 @@ class OperationsWidget(QWidget):
                 f"This matrix has {data_to_export.shape[1]} columns, more than the "
                 f"16384 an .xlsx file can hold. Export it as NumPy (.npy) instead."
             )
+            return
+        if fmt.startswith("Excel") and getattr(data_to_export, "size", 0) > export.XLSX_MAX_CELLS:
+            QMessageBox.warning(self, "Export Error", export.XLSX_TOO_LARGE)
             return
 
         self.export_func(data_to_export, fmt, prefix)
@@ -1733,6 +1917,7 @@ class DatumWidget(QWidget):
         buttons_layout.addWidget(self.show_filtered_btn)
 
         self.filter_status_label = QLabel()
+        self.filter_status_label.setTextFormat(Qt.TextFormat.RichText)
         buttons_layout.addWidget(self.filter_status_label)
 
         make_section_header("Datum Effect", buttons_layout)
@@ -2408,10 +2593,13 @@ class DatumWidget(QWidget):
 
     def _update_filter_status(self) -> None:
         pending = self._capture_filter_settings()
-        text = self._describe_filter(pending)
+        label = self.filter_status_label
+        text = html.escape(self._describe_filter(pending))
+        state, tone = ("ENABLED", "ok") if "ENABLED" in text else ("DISABLED", "muted")
+        text = text.replace(state, f'<span style="color:{tone_color(tone, label)}">{state}</span>', 1)
         if self._applied_filter != pending:
-            text += "   (not applied yet)"
-        self.filter_status_label.setText(text)
+            text += f'&nbsp;&nbsp;&nbsp;<span style="color:{tone_color("warn", label)}">(not applied yet)</span>'
+        label.setText(text)
 
     def calculate_sigma_theta(self):
         parent_app = self.window()
@@ -3062,6 +3250,8 @@ class FileInfoWidget(QWidget):
 
         dlg = VarianceFactorDialog(default_vf, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            if dlg.chosen_value() != self.main_app.get_variance_factor():
+                self.main_app.covariance_widget.operations_widget.reset_for_new_file()
             self.main_app.custom_variance_factor = dlg.chosen_value()
             self.update_display()
 
@@ -3077,16 +3267,16 @@ class FileInfoWidget(QWidget):
         custom_vf = getattr(self.main_app, 'custom_variance_factor', None)
         vf_data = current_blocks.get('SOLUTION/STATISTICS')
         if custom_vf is not None:
-            self.vf_label.setText(f"Variance Factor: {custom_vf} (custom)")
+            set_status(self.vf_label, f"Variance Factor: {custom_vf} (custom)", "font-size: 18px;")
         elif vf_data is not None and isinstance(vf_data, (float, int)):
-            self.vf_label.setText(f"Variance Factor: {vf_data}")
+            set_status(self.vf_label, f"Variance Factor: {vf_data}", "font-size: 18px;")
         else:
-            self.vf_label.setText("Variance Factor: Missing")
+            set_status(self.vf_label, "Variance Factor: Missing", "font-size: 18px;")
         site_id_block = current_blocks.get('SITE/ID')
         if site_id_block and isinstance(site_id_block, list):
-            self.station_label.setText(f"Stations Found (SITE/ID): {len(site_id_block)}")
+            set_status(self.station_label, f"Stations Found (SITE/ID): {len(site_id_block)}", "font-size: 18px;")
         else:
-            self.station_label.setText("Stations Found (SITE/ID): Missing")
+            set_status(self.station_label, "Stations Found (SITE/ID): Missing", "font-size: 18px;")
 
         key_L = 'SOLUTION/MATRIX_APRIORI L COVA'
         data_L = current_blocks.get(key_L)
@@ -3101,7 +3291,7 @@ class FileInfoWidget(QWidget):
             self.aprcov_label.setText("Apriori Covariance Found: False")
 
     def clear_display(self):
-        self.vf_label.setText("Variance Factor: --")
-        self.station_label.setText("Stations Found (SITE/ID): --")
+        set_status(self.vf_label, "Variance Factor: --", "font-size: 18px;")
+        set_status(self.station_label, "Stations Found (SITE/ID): --", "font-size: 18px;")
         self.aprcov_label.setText("Apriori Covariance Found: --")
 

@@ -21,7 +21,9 @@ def build_normal_matrix(Cov_final, var_factor, apr_data, apr_key):
         logger.info(f"Apriori covariance block found in {apr_key}, dimension={apr_data.shape}.")
         # N = inv(Qx) - inv(C0): remove apriori constraint in information space
         try:
-            N = np.linalg.inv(Qx) - align_apriori_info_matrix(apr_data, final_dim)
+            Qinv = np.linalg.inv(Qx)
+            del Qx
+            N = Qinv - align_apriori_info_matrix(apr_data, final_dim)
         except np.linalg.LinAlgError:
             logger.warning("Inversion failed during N = inv(Qx) - inv(C0) => Normal matrix not set.")
             raise NormalMatrixError("Inversion failed during N = inv(Qx) - inv(C0).")
@@ -124,7 +126,7 @@ def recomputation_check(N, u, dx):
         return lines
     relative_error = l2_norm_of_difference / norm_of_original
     lines.append(f"Relative Error: {relative_error:.6e} (or {relative_error:.4%})")
-    if relative_error > 1e-6:
+    if not np.isfinite(relative_error) or relative_error > 1e-6:
         lines.append(
             "WARNING: relative_error > 1e-6")
     else:

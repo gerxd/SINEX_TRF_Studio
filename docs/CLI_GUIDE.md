@@ -1,6 +1,6 @@
 # Command line guide
 
-SINEX TRF Studio 1.3 runs its whole analysis without the desktop window. This
+SINEX TRF Studio 1.4 runs its whole analysis without the desktop window. This
 guide covers every command, every flag, what gets written, and what the command
 line cannot do.
 
@@ -34,7 +34,7 @@ command line is not reachable from the executable. A machine that needs the comm
 line needs the Python install.
 
 ```bash
-.venv/Scripts/python.exe -m sinex_parser.cli --version    # SINEX TRF Studio 1.3.0
+.venv/Scripts/python.exe -m sinex_parser.cli --version    # SINEX TRF Studio 1.4.0
 .venv/Scripts/python.exe -m sinex_parser.cli --help
 .venv/Scripts/python.exe -m sinex_parser.cli datum --help
 ```
@@ -260,7 +260,8 @@ filtering.
 ## Formats and precision
 
 `--formats` takes any combination, so `--formats csv,txt,npy,xlsx` writes all four
-in one pass.
+in one pass. An unknown name is refused before anything is written. `.xlsx` is
+refused for a matrix of more than 5 million cells.
 
 | Format | Written by | Precision | Exact |
 |---|---|---|---|
@@ -287,11 +288,27 @@ Full detail, including the measured effect of the v1.2 precision change, is in
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 2 | usage error, a missing file, a missing required block, or a missing variance factor |
+| 2 | usage error, a missing file, a file that cannot be parsed, a missing required block, or a missing variance factor |
 | 3 | the analysis raised, a `DatumError` or a `NormalMatrixError` |
 
 Errors print to stderr with an `error:` prefix. Anything that reaches code 3 is a
 mathematical failure on that file rather than a mistake in the command.
+
+## JSON summary
+
+`parse`, `datum` and `normal` take `--json`. The command then prints one JSON object
+to stdout instead of its usual lines, and writes the same files. Values that are
+not finite are written as `null`.
+
+| Command | Keys |
+|---|---|
+| `parse` | `command`, `version`, `file`, `blocks` (shape and dtype, entry count, or value), `parameters`, `station_episodes` |
+| `datum` | `command`, `version`, `file`, `filtered`, `episodes_excluded`, `episodes_used`, `negative_sigma_theta_diagonal`, `helmert` (by name, `tx` to `ez_v`), `written` |
+| `normal` | `command`, `version`, `file`, `variance_factor`, `n`, `recomputation_check` (the lines), `written`, and `rank` and `rank_deficiency` with `--rank` |
+
+```bash
+.venv/Scripts/python.exe -m sinex_parser.cli datum examples/BKG08457.SNX --out out --json
+```
 
 ## Worked examples
 

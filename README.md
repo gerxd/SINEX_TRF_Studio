@@ -57,6 +57,15 @@ the format precision table and the exit codes.
 - Visualize station distributions through an offline map interface.
 - Export parsed or computed results to `.xlsx`, `.csv`, `.txt`, and `.npy`.
 
+## Performance
+
+Large covariance blocks are parsed in parallel worker processes, and slow steps run
+beside the window so it keeps responding. Results are identical to earlier versions.
+
+![Covariance parse at IGS scale](docs/figures/parse_time.svg)
+
+![How a large covariance block is parsed](docs/figures/parallel_parse.svg)
+
 
 ## Usage Guide
 

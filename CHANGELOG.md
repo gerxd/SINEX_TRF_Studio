@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.4.0
+
+New features:
+- Large covariance blocks are parsed in up to four worker processes. At IGS scale,
+  17616 parameters and 4.09 GB, a load takes about 28 s instead of 163 s and needs
+  about 0.35 GiB more memory while it runs. Blocks under 64 MB are parsed as before.
+  Settings, Parsing defaults turns it off or sets 2, 4 or 8 workers. The default is on, with 4 workers
+- The normal matrix, the recomputation check, the rank, the eigenvalue plots and large
+  exports run in the background, so the window keeps responding. A result that finishes
+  after a new file is loaded is discarded
+- `--json` on `parse`, `datum` and `normal` prints a machine readable summary
+
+Changes:
+- The window title shows the version number
+- Log messages are coloured by kind: warnings amber, errors orange, finished steps
+  green. The filter status line and the file information labels use the same colours
+- The file is read once instead of twice
+- Loading a new file closes the pyqtgraph preview and frees its copy of the matrix
+- The normal matrix frees Qx as soon as it is inverted
+- Raw block csv export is about 3 times faster, with identical output. .npy and .txt
+  exports no longer copy the matrix first
+- .xlsx export is refused above 5 million cells. Use .npy, .csv or .txt
+- The negative Sigma Theta diagonal message is logged as a warning, so the command line
+  shows it
+- The Raw export tab is rebuilt. It lists the blocks the file holds with their size and an
+  estimated output size, and shows a preview of the selected block
+- Raw export writes several blocks in one action, into one folder, with fixed file names
+- Each exported matrix can get a `_params.csv` that names the parameter of every row, taken
+  from the INDEX column of SOLUTION/ESTIMATE, or SOLUTION/APRIORI for an apriori matrix
+- Raw export writes `export_manifest.json` with the source file, the app version, and the
+  size and SHA-256 of every file written
+- Blocks too large for .xlsx are marked and left out before the export starts, instead of
+  being refused after the save dialog
+
+Fixes:
+- A station less than one degree south of the equator was placed north of it on the map,
+  and a station between 180 and 181 degrees east was left off the map
+- Choosing a second file while one is parsing no longer breaks the second load
+- Log messages from background work now reach the log panel
+- A new variance factor clears the normal matrix and u computed with the old one
+- A stray non UTF-8 byte no longer aborts the load
+- A SOLUTION/ESTIMATE block out of INDEX order, and parameter lines without the ten
+  standard fields, are reported in the log
+- The recomputation check no longer reports PASS when the error is NaN
+- The command line refuses unknown `--formats` names and exits with code 2 on a file it
+  cannot parse
+- Raw export adds the file extension
+- The window no longer closes and reopens the first time the Stations tab is opened
+- .npy exports of SITE/ID, SOLUTION/ESTIMATE and SOLUTION/APRIORI needed `allow_pickle=True` to
+  load. They are now plain structured arrays with text columns
+
 ## 1.3.4
 
 Changes:
