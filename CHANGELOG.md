@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.1
+
+Changes:
+- Settings has "Create desktop shortcut", which puts a shortcut to `run_windows.bat` on
+  the Windows desktop, or to `run_macos_linux.sh` on macOS and Linux. The entry for the
+  other system's run file is shown but disabled. The shortcut uses the window icon on
+  Windows and Linux
+
 ## 1.4.0
 
 New features:

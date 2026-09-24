@@ -1,6 +1,8 @@
 # ui/main_window.py
 import logging
 import os
+import subprocess
+import sys
 
 from PyQt6.QtGui import QFont, QAction, QActionGroup
 from PyQt6.QtWidgets import (
@@ -10,7 +12,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QMenu, QTableWidget, QTableWidgetItem, QLineEdit, QAbstractItemView,
     QHeaderView
 )
-from PyQt6.QtCore import QUrl, pyqtSignal
+from PyQt6.QtCore import QUrl, pyqtSignal, QStandardPaths
 from PyQt6.QtQuickWidgets import QQuickWidget
 import numpy as np
 from pathlib import Path
@@ -19,6 +21,9 @@ from plyer import notification
 from PyQt6 import QtGui, QtCore
 
 from .. import __version__
+
+PROGRAM_DIR = Path(__file__).resolve().parents[2]
+ICON_PATH = PROGRAM_DIR / 'sinex_parser' / 'ui' / 'icon.ico'
 from ..core import (
     logger, benchmark,
     remember_dialog_dir, default_save_path, ensure_suffix,
@@ -84,8 +89,7 @@ class SINEXParserApp(QMainWindow):
         self._build_settings_menu()
 
         main_layout = QVBoxLayout()
-        icon_path = "sinex_parser/ui/icon.ico"
-        self.setWindowIcon(QtGui.QIcon(icon_path))
+        self.setWindowIcon(QtGui.QIcon(str(ICON_PATH)))
 
         top_container = QWidget()
         top_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -314,6 +318,36 @@ class SINEXParserApp(QMainWindow):
         layout.addWidget(self.raw_status_label)
         return tab
 
+    def _create_desktop_shortcut(self, name):
+        target = PROGRAM_DIR / name
+        desktop = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DesktopLocation))
+        try:
+            if os.name == 'nt':
+                link = desktop / 'SINEX TRF Studio.lnk'
+                q = lambda p: str(p).replace("'", "''")
+                script = (f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{q(link)}'); "
+                          f"$s.TargetPath = '{q(target)}'; $s.WorkingDirectory = '{q(PROGRAM_DIR)}'; "
+                          f"$s.IconLocation = '{q(ICON_PATH)}'; $s.Save()")
+                subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+                               check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            elif sys.platform == 'darwin':
+                link = desktop / 'SINEX TRF Studio.command'
+                link.write_text(f'#!/bin/bash\ncd "{PROGRAM_DIR}"\nexec bash "{target}"\n')
+                link.chmod(0o755)
+            else:
+                icon = PROGRAM_DIR / 'sinex_parser' / 'ui' / 'icon.png'
+                self.windowIcon().pixmap(256, 256).save(str(icon))
+                link = desktop / 'SINEX TRF Studio.desktop'
+                link.write_text("[Desktop Entry]\nType=Application\nName=SINEX TRF Studio\n"
+                                f"Exec=bash \"{target}\"\nPath={PROGRAM_DIR}\nIcon={icon}\nTerminal=true\n")
+                link.chmod(0o755)
+        except Exception as exc:
+            logger.error(f"Could not create the desktop shortcut: {exc}")
+            QMessageBox.warning(self, "Desktop shortcut", f"Could not create the desktop shortcut: {exc}")
+            return
+        logger.info(f"Created desktop shortcut {link}")
+        QMessageBox.information(self, "Desktop shortcut", f"Created {link.name} on the desktop.")
+
     def _show_settings_menu(self):
         corner = self.settings_button.rect().bottomLeft()
         self._settings_menu.exec(self.settings_button.mapToGlobal(corner))
@@ -421,6 +455,14 @@ class SINEXParserApp(QMainWindow):
         self._remember_filter_action.setChecked(self._remember_filter)
         self._remember_filter_action.triggered.connect(self._toggle_remember_filter)
         parse_menu.addAction(self._remember_filter_action)
+
+        shortcut_menu = settings_menu.addMenu('Create desktop shortcut')
+        for name, native in (('run_windows.bat', os.name == 'nt'),
+                             ('run_macos_linux.sh', os.name != 'nt')):
+            act = QAction(name, self)
+            act.setEnabled(native and (PROGRAM_DIR / name).exists())
+            act.triggered.connect(lambda _checked, name=name: self._create_desktop_shortcut(name))
+            shortcut_menu.addAction(act)
 
         settings_menu.addSeparator()
 
