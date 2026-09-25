@@ -1,10 +1,11 @@
 # io/reader.py
+import gzip
 import time
 from pathlib import Path
 from typing import Dict
 
 from ..core import logger, benchmark
-from .parsers import SinexBlockParser, MatrixEstimateParser
+from .parsers import SinexBlockParser, MatrixEstimateParser, DiscontinuityParser
 from . import parallel
 
 
@@ -12,10 +13,32 @@ class SinexStructureError(ValueError):
     pass
 
 
+def read_discontinuities(path):
+    path = Path(path)
+    opener = gzip.open if path.suffix.lower() == ".gz" else open
+    lines, inside, found = [], False, False
+    with opener(path, "rt", encoding="utf-8", errors="replace") as f:
+        for ln in f:
+            ln = ln.rstrip()
+            if ln.startswith("+SOLUTION/DISCONTINUITY"):
+                inside = found = True
+            elif ln.startswith("-SOLUTION/DISCONTINUITY"):
+                inside = False
+            elif inside:
+                lines.append(ln)
+    if not found:
+        raise ValueError(f"{path.name} has no SOLUTION/DISCONTINUITY block")
+    records = DiscontinuityParser().parse(lines)
+    logger.info(f"Read {len(records)} discontinuity records from {path.name}")
+    return records
+
+
 def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
-                     skip_validation=False, parse_generation=None, check_structure=False):
+                     skip_validation=False, parse_generation=None, check_structure=False,
+                     matrix_dir=None, name=None):
     start_time = time.time()
-    logger.info(f"Starting parse of file: {filename.name}")
+    name = name or filename.name
+    logger.info(f"Starting parse of file: {name}")
     gen = parse_generation
     parse_token = benchmark.begin('parse file (all blocks)', gen)
     stream_token = None
@@ -34,6 +57,7 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
     streaming_parser = None
     open_blocks = []
     executor = None
+    streamed = 0
 
     try:
         with open(filename, 'rb') as file:
@@ -72,7 +96,11 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
                                     "could not be read, so the covariance cannot be matched to the parameters.")
                             if est is not None:
                                 sz = len(est)
-                                parser.init_stream(sz)
+                                target = None
+                                if matrix_dir is not None:
+                                    streamed += 1
+                                    target = Path(matrix_dir) / f"stream{streamed}.npy"
+                                parser.init_stream(sz, target)
                                 streaming_parser = parser
                                 stream_token = benchmark.begin(f'stream {cur_block}', gen)
                                 logger.info(f"Stream-parsing {cur_block} ({sz}x{sz})")
@@ -138,7 +166,7 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
         est = sinex_data['blocks'].get('SOLUTION/ESTIMATE')
         if est and any(p.get('index') != i for i, p in enumerate(est, 1)):
             logger.warning("SOLUTION/ESTIMATE is not in INDEX order 1 to n. The datum and normal computations sort it by INDEX, or refuse it if INDEX is not a permutation of 1 to n.")
-        logger.info(f"Finished parse of {filename.name} in {time.time()-start_time:.3f}s.")
+        logger.info(f"Finished parse of {name} in {time.time()-start_time:.3f}s.")
         logger.info(f"Total lines read: {total_lines}, blocks: {len(sinex_data['blocks'])}.")
         benchmark.end(parse_token)
         return sinex_data

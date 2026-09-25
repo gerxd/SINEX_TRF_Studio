@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QPlainTextEdit, QListWidget, QListWidgetItem, QTableView,
     QDialog, QSpacerItem, QGridLayout, QStackedLayout, QApplication,
     QCheckBox, QDoubleSpinBox, QRadioButton, QScrollArea, QLineEdit,
-    QSizePolicy, QGroupBox
+    QSizePolicy, QGroupBox, QStyleFactory
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QStandardPaths, QObject
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -31,7 +31,8 @@ matplotlib.use("QtAgg")  # ensure Qt5 backend
 import matplotlib.pyplot as plt
 import seaborn as sns
 import folium
-from branca.element import Element
+from branca.element import Element, MacroElement
+from jinja2 import Template
 from plyer import notification
 from .. import __version__
 
@@ -40,7 +41,7 @@ from ..core import (
     default_export_format, default_pos_threshold, default_vel_threshold,
 )
 from ..io import SinexBlockParser, MatrixEstimateParser
-from ..io import export, figures, reader
+from ..io import export, figures, reader, library
 from ..analysis import datum as datum_math
 from ..analysis import normal as normal_math
 from ..analysis import reporting
@@ -52,6 +53,61 @@ CONTROL_COLUMN_MIN = 400
 
 class StationsMapPage(QWebEnginePage):
     pass
+
+
+EPISODE_JS = """
+(function () {
+var map = __MAP__;
+var Ring = L.CircleMarker.extend({
+  _project: function () {
+    this._point = this._map.latLngToLayerPoint(this._latlng).add(this.options.offset);
+    this._updateBounds();
+  }
+});
+var groups = {kept: L.featureGroup(), filtered: L.featureGroup()};
+var byCode = {};
+var selected = null;
+function look(m, on) {
+  var size = on ? 14 : 10;
+  m.options.offset = L.point(m.row.dx * size / 10, m.row.dy * size / 10);
+  m.setStyle({radius: on ? 6 : 4.5, color: on ? "#111111" : "#ffffff", weight: on ? 2 : 1});
+}
+window.sinexData = function (rows) {
+  groups.kept.clearLayers();
+  groups.filtered.clearLayers();
+  byCode = {};
+  rows.forEach(function (r) {
+    var m = new Ring([r.lat, r.lon], {offset: L.point(r.dx, r.dy), radius: 4.5, color: "#ffffff",
+      weight: 1, opacity: 0.92, fillColor: r.color, fillOpacity: 0.92});
+    m.row = r;
+    m.bindPopup(r.popup, {maxWidth: 320});
+    m.bindTooltip(r.label, {sticky: true});
+    groups[r.filtered ? "filtered" : "kept"].addLayer(m);
+    (byCode[r.code] = byCode[r.code] || []).push(m);
+  });
+  var code = selected;
+  selected = null;
+  sinexSelect(code);
+};
+window.sinexShow = function (kept, filtered) {
+  if (kept) { groups.kept.addTo(map); } else { groups.kept.remove(); }
+  if (filtered) { groups.filtered.addTo(map); } else { groups.filtered.remove(); }
+};
+window.sinexSelect = function (code, lat, lon) {
+  (byCode[selected] || []).forEach(function (m) { look(m, false); });
+  selected = code;
+  var ms = byCode[code] || [];
+  ms.forEach(function (m) { look(m, true); m.bringToFront(); });
+  if (lat === undefined || lat === null) { return; }
+  map.setView([lat, lon], 6, {animate: false});
+  var shown = ms.filter(function (m) { return map.hasLayer(m); });
+  if (shown.length) { shown[0].openPopup(map.layerPointToLatLng(shown[0]._point)); }
+};
+sinexData(__ROWS__);
+sinexShow(__KEPT__, __FILTERED__);
+sinexSelect(__SELECTED__);
+})();
+"""
 
 ###############################################################################
 #Plot lifetime
@@ -77,28 +133,52 @@ class ParserWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, filename: Path, block_parsers: Dict[str, SinexBlockParser], skip_epochs_block: bool = False, skip_validation: bool = False):
+    def __init__(self, filename: Path, block_parsers: Dict[str, SinexBlockParser], skip_epochs_block: bool = False, skip_validation: bool = False,
+                 library_root=None, keep=False, entry=None):
         super().__init__()
         self.filename = filename
+        self.library_root = library_root
+        self.keep = keep
+        self.entry = entry
+        self.library_entry = None
         self.block_parsers = block_parsers
         self.skip_epochs_block = skip_epochs_block  # Store the setting
         self.skip_validation = skip_validation
         self.result_data = None
         self.parse_generation = None
         self.structure_error = False
+        self.reused = False
     def run(self):
         try:
-            self.result_data = reader.parse_sinex_file(
-                self.filename, self.block_parsers, self.skip_epochs_block,
-                self.skip_validation, self.parse_generation,
-                check_structure=not self.skip_validation,
-            )
+            if self.entry is not None:
+                start = time.time()
+                self.result_data = library.open_entry(self.entry)
+                self.library_entry = self.entry
+                self.reused = True
+                library.touch(self.entry)
+                library.log_loaded(self.result_data, Path(self.filename).name, self.entry, time.time() - start)
+            else:
+                status = {}
+                self.result_data, self.library_entry = library.load(
+                    self.filename, self.block_parsers, self.library_root, self.keep,
+                    skip_epochs_block=self.skip_epochs_block, skip_validation=self.skip_validation,
+                    parse_generation=self.parse_generation, check_structure=not self.skip_validation,
+                    status=status,
+                )
+                self.reused = status.get("reused", False)
             self.finished.emit()
         except Exception as e:
             self.structure_error = isinstance(e, reader.SinexStructureError)
             self.error.emit(str(e))
 
 _TASKS = set()
+
+
+class _TaskSignals(QObject):
+    busy = pyqtSignal(str)
+
+
+TASK_SIGNALS = _TaskSignals()
 
 
 class TaskWorker(QThread):
@@ -116,14 +196,17 @@ class TaskWorker(QThread):
             self.error = exc
 
 
-def run_task(func, args, on_done):
+def run_task(func, args, on_done, label="Working"):
     worker = TaskWorker(func, *args)
+    worker.label = label
     _TASKS.add(worker)
     QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+    TASK_SIGNALS.busy.emit(label)
 
     def finish():
         _TASKS.discard(worker)
         QApplication.restoreOverrideCursor()
+        TASK_SIGNALS.busy.emit(next(iter(_TASKS)).label if _TASKS else "")
         on_done(worker)
 
     worker.finished.connect(finish)
@@ -387,14 +470,20 @@ class MatrixVisualizerWidget(QWidget):
         pg_controls_row.addStretch()
         pg_layout.addLayout(pg_controls_row)
 
-        pg_layout.addWidget(self.pg_plot_button)
-        pg_layout.addWidget(self.save_full_btn)
+        pg_buttons_row = QHBoxLayout()
+        pg_buttons_row.addWidget(self.pg_plot_button)
+        pg_buttons_row.addWidget(self.save_full_btn)
+        pg_layout.addLayout(pg_buttons_row)
         sections_layout.addWidget(pg_frame)
 
         layout.addLayout(sections_layout)
+        layout.addStretch(1)
         self._has_plottable_matrix = False
 
         self.setLayout(layout)
+        for frame in (mpl_frame, pg_frame):
+            frame.setMinimumHeight(frame.sizeHint().height())
+        self.setMinimumHeight(self.sizeHint().height())
 
     def _format_cbar_heatmap(self, ax):
         import numpy as np
@@ -543,7 +632,8 @@ class MatrixVisualizerWidget(QWidget):
                 self.pg_plot_button.setEnabled(False)
                 gen = self._generation
                 run_task(np.linalg.eigvals, (data,),
-                         lambda w: self._show_eigen_plot(w, gen, selected_key, data.shape))
+                         lambda w: self._show_eigen_plot(w, gen, selected_key, data.shape),
+                         "Computing eigenvalues")
                 return
 
             ax.set_title(title)
@@ -798,7 +888,8 @@ class MatrixVisualizerWidget(QWidget):
                 self.pg_plot_button.setEnabled(False)
                 gen = self._generation
                 run_task(np.linalg.eigvalsh, (A,),
-                         lambda w: self._show_eigen_plot_pg(w, gen, selected_key))
+                         lambda w: self._show_eigen_plot_pg(w, gen, selected_key),
+                         "Computing eigenvalues")
                 return
 
             set_status(self.info_label, "PyQtGraph rendering complete.")
@@ -956,11 +1047,16 @@ class StationsWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.stations_data = []
+        self.episodes = []
+        self.excluded = set()
+        self.labels = {}
         self.filtered_codes = set()
         self._selected_station_code = None
         self._geojson_cache = {}
         self._map_html_path = None
         self._stale_map_html_paths = []
+        self._map_ready = False
+        self._pending_js = []
         self._setup_ui()
 
     def _setup_ui(self):
@@ -968,11 +1064,13 @@ class StationsWidget(QWidget):
         upper_layout = QHBoxLayout()
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.station_list = QListWidget()
+        self._list_style = QStyleFactory.create('Fusion')
+        self.station_list.setStyle(self._list_style)
         self.info_panel = QWidget()
         self.info_panel.setMaximumWidth(240)
         self.init_info_panel()
         self.refresh_button = QPushButton("Refresh")
-        self.refresh_button.clicked.connect(self.update_station_map)
+        self.refresh_button.clicked.connect(self._rebuild_map)
         self.map_view = QWebEngineView()
         self._configure_map_view()
         self.station_list.setMinimumWidth(50)
@@ -980,15 +1078,19 @@ class StationsWidget(QWidget):
         self.station_list.itemClicked.connect(self.on_click)
 
         vis_layout = QHBoxLayout()
-        self.show_kept_chk = QCheckBox("Passed Stations")
+        self.show_kept_chk = QCheckBox("Kept Episodes")
         self.show_kept_chk.setChecked(True)
-        self.show_kept_chk.toggled.connect(self.update_station_map)
-        self.show_filtered_chk = QCheckBox("Filtered Stations")
+        self.show_kept_chk.toggled.connect(self._show_groups)
+        self.show_filtered_chk = QCheckBox("Filtered Episodes")
         self.show_filtered_chk.setChecked(True)
-        self.show_filtered_chk.toggled.connect(self.update_station_map)
+        self.show_filtered_chk.toggled.connect(self._show_groups)
+        self.discontinuity_btn = QPushButton("Load discontinuity list")
+        self.discontinuity_label = QLabel("")
         vis_layout.addWidget(self.show_kept_chk)
         vis_layout.addWidget(self.show_filtered_chk)
         vis_layout.addStretch(1)
+        vis_layout.addWidget(self.discontinuity_label)
+        vis_layout.addWidget(self.discontinuity_btn)
 
         self.splitter.addWidget(self.station_list)
         self.splitter.addWidget(self.info_panel)
@@ -1014,6 +1116,8 @@ class StationsWidget(QWidget):
         )
 
     def _queue_map_html_cleanup(self):
+        self._map_ready = False
+        self._pending_js = []
         if self._map_html_path is None:
             return
 
@@ -1035,6 +1139,28 @@ class StationsWidget(QWidget):
 
     def _on_map_load_finished(self, ok: bool):
         self._prune_map_html()
+        if ok and self._map_html_path is not None:
+            self._map_ready = True
+            for js in self._pending_js:
+                self.map_page.runJavaScript(js)
+            self._pending_js = []
+
+    def _map_js(self, js):
+        if self._map_ready:
+            self.map_page.runJavaScript(js)
+        else:
+            self._pending_js.append(js)
+
+    def _rebuild_map(self):
+        self._queue_map_html_cleanup()
+        self.update_station_map()
+
+    def _show_groups(self):
+        if self._map_html_path is None:
+            self.update_station_map()
+            return
+        self._map_js(f"sinexShow({json.dumps(self.show_kept_chk.isChecked())}, "
+                     f"{json.dumps(self.show_filtered_chk.isChecked())})")
 
     def init_info_panel(self):
         layout = QVBoxLayout(self.info_panel)
@@ -1071,29 +1197,32 @@ class StationsWidget(QWidget):
         )
         self.map_view.loadFinished.connect(self._on_map_load_finished)
 
-    def set_filtered_codes(self, codes: set):
-        self.filtered_codes = set(codes or [])
+    def set_excluded_episodes(self, episodes: set):
+        self.excluded = set(episodes or [])
+        self.filtered_codes = {ep[0] for ep in self.excluded}
         self.populate_station_list()
 
-    def set_data(self, stations_data: List[dict]):
+    def set_data(self, stations_data: List[dict], episodes=()):
         self.stations_data = stations_data
+        self.episodes = list(episodes)
         #new stations -> new file -> ignore past filtering data
+        self.excluded = set()
         self.filtered_codes = set()
 
         available_codes = {station.get("code") for station in stations_data}
         if self._selected_station_code not in available_codes:
             self._selected_station_code = None
         if self._selected_station_code is None and stations_data:
-            self._selected_station_code = stations_data[0].get("code")
+            self._selected_station_code = min(str(s.get("code", "????")) for s in stations_data)
         if self._selected_station_code is None:
             self.display.setText("select a station")
 
         self.populate_station_list()
-        self.update_station_map()
+        self._rebuild_map()
 
     def populate_station_list(self):
         self.station_list.clear()
-        for station in self.stations_data:
+        for station in sorted(self.stations_data, key=lambda s: str(s.get("code", "????"))):
             code = station.get("code", "????")
             item = QListWidgetItem(code)
             item.setForeground(
@@ -1115,17 +1244,53 @@ class StationsWidget(QWidget):
             )
         return self._geojson_cache[cache_key]
 
+    def _episode_key(self, ep):
+        return ep["code"], ep["pt"], ep["soln"]
+
+    def _episode_lines(self, ep):
+        label = self.labels.get(self._episode_key(ep)) or {}
+        lines = [ep["label"], "Filtered" if self._episode_key(ep) in self.excluded else "Kept"]
+        if label.get("span"):
+            lines.append(f"Span: {label['span']}")
+        if label.get("break"):
+            lines.append(f"Break: {label['break']}")
+        return lines
+
     def _visible_stations(self, show_kept: bool, show_filtered: bool) -> List[dict]:
         visible = []
-        for station in self.stations_data:
-            code = station.get("code")
-            is_filtered = code in self.filtered_codes
+        for station in self.episodes:
+            is_filtered = self._episode_key(station) in self.excluded
             if is_filtered and not show_filtered:
                 continue
             if (not is_filtered) and not show_kept:
                 continue
             visible.append(station)
         return visible
+
+    def _marker_rows(self) -> List[dict]:
+        groups = {}
+        for ep in self.episodes:
+            groups.setdefault((round(ep["latitude"], 2), round(ep["longitude"], 2)), []).append(ep["label"])
+        rows = []
+        for ep in self.episodes:
+            lat, lon = ep["latitude"], ep["longitude"]
+            members = groups[(round(lat, 2), round(lon, 2))]
+            dx = dy = 0.0
+            if len(members) > 1:
+                angle = 2 * np.pi * members.index(ep["label"]) / len(members) - np.pi / 2
+                ring = 10 * max(0.7, 0.18 * len(members))
+                dx, dy = ring * np.cos(angle), ring * np.sin(angle)
+            is_filtered = self._episode_key(ep) in self.excluded
+            first, *rest = self._episode_lines(ep)
+            lines = [f"<b>{html.escape(first)}</b>"] + [html.escape(t) for t in rest]
+            lines.append(f"Lat: {lat:.4f}<br>Lon: {lon:.4f}")
+            rows.append({"lat": lat, "lon": lon, "dx": float(dx), "dy": float(dy),
+                         "code": ep["code"], "label": ep["label"], "filtered": is_filtered,
+                         "color": "#c0392b" if is_filtered else "#2e8b57", "popup": "<br>".join(lines)})
+        return rows
+
+    def _rows_json(self) -> str:
+        return json.dumps(self._marker_rows()).replace("</", "<\\/")
 
     def _build_offline_folium_map(
         self,
@@ -1195,26 +1360,14 @@ class StationsWidget(QWidget):
         ).add_to(fol_map)
 
         selected_station = self._station_by_code(self._selected_station_code)
-        for station in visible_stations:
-            code = station["code"]
-            lat = station["latitude"]
-            lon = station["longitude"]
-            is_filtered = code in self.filtered_codes
-            marker_color = "#c0392b" if is_filtered else "#2e8b57"
-            is_selected = selected_station is not None and code == selected_station.get("code")
-
-            popup_html = f"<b>{code}</b><br>Lat: {lat:.4f}<br>Lon: {lon:.4f}"
-            folium.CircleMarker(
-                [lat, lon],
-                radius=8 if is_selected else 6,
-                color="#111111" if is_selected else marker_color,
-                fill=True,
-                fill_color=marker_color,
-                fill_opacity=0.92,
-                weight=2 if is_selected else 1,
-                popup=popup_html,
-                tooltip=code,
-            ).add_to(fol_map)
+        layer = MacroElement()
+        layer._template = Template("{% macro script(this, kwargs) %}{{ this.js }}{% endmacro %}")
+        layer.js = (EPISODE_JS.replace("__MAP__", fol_map.get_name())
+                    .replace("__ROWS__", self._rows_json())
+                    .replace("__KEPT__", json.dumps(self.show_kept_chk.isChecked()))
+                    .replace("__FILTERED__", json.dumps(self.show_filtered_chk.isChecked()))
+                    .replace("__SELECTED__", json.dumps(self._selected_station_code)))
+        fol_map.add_child(layer)
 
         if selected_station is not None and focus_selected:
             lat = float(selected_station["latitude"])
@@ -1245,7 +1398,7 @@ class StationsWidget(QWidget):
         return fol_map
 
     def update_station_map(self, focus_selected: bool = False):
-        if not self.stations_data:
+        if not self.episodes:
             self._queue_map_html_cleanup()
             self._set_map_message("No Station Data")
             self._prune_map_html()
@@ -1257,6 +1410,11 @@ class StationsWidget(QWidget):
 
         if self._selected_station_code is not None:
             self._update_station_info(self._selected_station_code)
+
+        if self._map_html_path is not None:
+            self._map_js(f"sinexData({self._rows_json()}); sinexShow({json.dumps(show_kept)}, "
+                         f"{json.dumps(show_filtered)})")
+            return
 
         if not visible_stations:
             self._queue_map_html_cleanup()
@@ -1321,13 +1479,20 @@ class StationsWidget(QWidget):
             f"LON: {lon_str}\n\n"
             f"Other:\n{details_str}"
         )
+        for ep in self.episodes:
+            if ep["code"] == station_code:
+                info_str += "\n\n" + "\n".join(self._episode_lines(ep))
         self.display.setText(info_str)
 
     def on_click(self, item):
         self._selected_station_code = item.text()
         self._set_current_station_item(self._selected_station_code)
         self._update_station_info(self._selected_station_code)
-        self.update_station_map(focus_selected=True)
+        station = self._station_by_code(self._selected_station_code)
+        if station is None or self._map_html_path is None:
+            return
+        self._map_js(f"sinexSelect({json.dumps(station['code'])}, {float(station['latitude'])}, "
+                     f"{float(station['longitude'])})")
 
 ###############################################################################
 #OperationsWidget
@@ -1444,7 +1609,7 @@ class OperationsWidget(QWidget):
             btn.setEnabled(not busy)
         self.rank_btn.setEnabled(not busy and self._normal_matrix is not None)
 
-    def _start(self, func, args, on_done):
+    def _start(self, func, args, on_done, label):
         gen = self._generation
         self._set_busy(True)
 
@@ -1459,7 +1624,7 @@ class OperationsWidget(QWidget):
                 return
             on_done(worker)
 
-        run_task(func, args, done)
+        run_task(func, args, done, label)
     
     _RANK_WARN_DIM = 3000
     _RANK_SECONDS_AT_2500 = 1.73
@@ -1483,7 +1648,8 @@ class OperationsWidget(QWidget):
         self.log_text.appendPlainText(
             f"Computing rank of a {N.shape[0]}x{N.shape[0]} matrix by SVD, this may take a while."
         )
-        self._start(normal_math.rank_of_normal_matrix, (N,), lambda w: self._rank_done(w, N))
+        self._start(normal_math.rank_of_normal_matrix, (N,), lambda w: self._rank_done(w, N),
+                    "Computing the rank of N")
 
     def _rank_done(self, worker, N):
         rank_n, elapsed = worker.result
@@ -1516,7 +1682,7 @@ class OperationsWidget(QWidget):
             apr_data = parent_app.current_data['blocks'].get(apr_key)
 
         self._start(normal_math.build_normal_matrix, (Cov_final, var_factor, apr_data, apr_key),
-                    lambda w: self._normal_done(w, t0, normal_bench))
+                    lambda w: self._normal_done(w, t0, normal_bench), "Computing the normal matrix")
 
     def _normal_done(self, worker, t0, normal_bench):
         parent_app = self.window()
@@ -1585,7 +1751,7 @@ class OperationsWidget(QWidget):
     def reverse_verify(self):
         self._start(normal_math.recomputation_check,
                     (self._normal_matrix, self._u_vector, self._dx_vector),
-                    self._verify_done)
+                    self._verify_done, "Running the recomputation check")
 
     def _verify_done(self, worker):
         for line in worker.result:
@@ -1667,11 +1833,16 @@ class CovarianceMatrixWidget(QWidget):
         self.visualizer_widget = MatrixVisualizerWidget(parent=self)
 
         right_column = QSplitter(Qt.Orientation.Vertical)
+        right_column.setChildrenCollapsible(False)
         right_column.addWidget(self.operations_widget)
-        right_column.addWidget(self.visualizer_widget)
+        visualizer_scroll = QScrollArea()
+        visualizer_scroll.setWidgetResizable(True)
+        visualizer_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        visualizer_scroll.setWidget(self.visualizer_widget)
+        right_column.addWidget(visualizer_scroll)
         right_column.setStretchFactor(0, 0)
         right_column.setStretchFactor(1, 1)
-        right_column.setSizes([300, 460])
+        right_column.setSizes([self.operations_widget.minimumSizeHint().height(), 10000])
         right_column.setFixedWidth(CONTROL_COLUMN_WIDTH)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1692,16 +1863,16 @@ class CovarianceMatrixWidget(QWidget):
 ###############################################################################
 class InfoWidget(QWidget):
     DEPENDENCIES: Tuple[str, ...] = (
-        "PyQt6>=6.5.0",
-        "PyQt6-WebEngine>=6.5.0",
-        "pyqtgraph>=0.13.0",
-        "numpy>=1.19.0",
-        "pandas>=1.1.0",
-        "matplotlib>=3.3.0",
-        "seaborn>=0.11.0",
-        "folium>=0.12.0",
-        "openpyxl>=3.0.0",
-        "plyer>=2.0.0",
+        "PyQt6==6.11.0",
+        "PyQt6-WebEngine==6.11.0",
+        "pyqtgraph==0.14.0",
+        "numpy==2.5.3",
+        "pandas==3.0.6",
+        "matplotlib==3.11.2",
+        "seaborn==0.13.2",
+        "folium==0.20.0",
+        "openpyxl==3.1.5",
+        "plyer==2.1.0",
     )
 
     def __init__(self, parent=None):
@@ -1848,6 +2019,14 @@ class InfoWidget(QWidget):
 AppliedFilter = datum_math.AppliedFilter
 
 
+def _sigma_theta_job(sol, Cx, applied):
+    excluded, details = datum_math.select_excluded_episodes(sol, Cx, applied)
+    try:
+        return excluded, details, datum_math.sigma_theta_from_covariance(sol, Cx, excluded)
+    except (datum_math.DatumError, np.linalg.LinAlgError) as exc:
+        return excluded, details, exc
+
+
 class DatumWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1864,11 +2043,14 @@ class DatumWidget(QWidget):
         self._manual_selected_episodes = set()  #episodes to INCLUDE
         self._applied_filter = None
         self._filter_enabled = True
+        self._file_loaded = False
+        self._sigma_generation = 0
         self._pos_threshold_m = default_pos_threshold()
         self._vel_threshold_m_per_y = default_vel_threshold()
         self._setup_ui()
         self._filtered_episodes_info = []  # list of dicts with details
         self._filtered_dialog = None  # dialog instance
+        self._datum_run = None
 
     def _setup_ui(self):
         # defaults for matrices
@@ -1974,11 +2156,11 @@ class DatumWidget(QWidget):
 
         layout.addLayout(export_line)
 
-        self.stats_btn = QPushButton("Export Statistics Report")
+        self.stats_btn = QPushButton("Diagnostics report")
         self.stats_btn.setToolTip(
-            "Export a text report with the analysis' relevant statistics"
+            "Write the diagnostics report of the datum as text and JSON"
         )
-        self.stats_btn.clicked.connect(self.export_stats_report)
+        self.stats_btn.clicked.connect(self.export_diagnostics_report)
         self.stats_btn.setEnabled(False)
 
         report_line = QHBoxLayout()
@@ -2011,12 +2193,14 @@ class DatumWidget(QWidget):
         #call at the start of every calculate_sigma_theta run so a recompute successful or failed can never leave behind an old cross-corr, helmert
 
 
+        self._sigma_generation += 1
         self.sigma_theta_matrix = None
         self.cross_correlation_matrix = None
         self.helmert_params = None
         self.filtered_solution_estimate = None
         self.filtered_Cx = None
         self.filtered_row_idx = None
+        self._datum_run = None
         self.cross_corr_btn.setEnabled(False)
         self.helmert_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
@@ -2032,11 +2216,11 @@ class DatumWidget(QWidget):
         parent_app = self.window()
         stations = getattr(parent_app, "stations_widget", None)
 
-        if stations is not None and getattr(stations, "filtered_codes", None):
-            stations.set_filtered_codes(set())
+        if stations is not None and getattr(stations, "excluded", None):
+            stations.set_excluded_episodes(set())
             stations.update_station_map()
 
-    def _reset_output_state(self) -> None:
+    def _reset_output_state(self, cleared=True) -> None:
         self._clear_computed_products()
 
         if self.matrix_display_combo.count():
@@ -2058,7 +2242,7 @@ class DatumWidget(QWidget):
                 pass
             self._matrix_inspector = None
 
-        self._clear_matrix_display("Cleared previous results for new file")
+        self._clear_matrix_display("Cleared previous results for new file" if cleared else "")
 
     def log_new_file_loaded(self, filename: str) -> None:
         self._clear_station_cache()  # Reset cache on new file load
@@ -2067,8 +2251,10 @@ class DatumWidget(QWidget):
         self._applied_filter = None
         self._update_filter_status()
         label = Path(filename).name
-        self._append_section(f"NEW FILE: {label}")
-        self._reset_output_state()
+        if self._file_loaded:
+            self._append_section(f"NEW FILE: {label}")
+        self._reset_output_state(self._file_loaded)
+        self._file_loaded = True
 
     def open_filtered_episodes_dialog(self):
         if not getattr(self, "_filtered_episodes_info", None):
@@ -2626,37 +2812,52 @@ class DatumWidget(QWidget):
         self._applied_filter = applied
         self._update_filter_status()
 
-        episodes_to_exclude, details = datum_math.select_excluded_episodes(sol, Cx, applied)
+        gen = self._sigma_generation
+        self.sigma_theta_btn.setEnabled(False)
+        run_task(_sigma_theta_job, (sol, Cx, applied),
+                 lambda worker: self._sigma_theta_done(worker, gen, sol, Cx, applied, sigma_bench),
+                 "Computing Sigma Theta")
+
+    def _sigma_theta_done(self, worker, gen, sol, Cx, applied, sigma_bench):
+        if gen != self._sigma_generation:
+            benchmark.cancel(sigma_bench)
+            logger.info("Ignoring a Sigma Theta result computed for a previous file.")
+            return
+        self.sigma_theta_btn.setEnabled(True)
+        if worker.error is not None:
+            benchmark.cancel(sigma_bench)
+            logger.error(f"SigmaTheta computation error: {worker.error}")
+            QMessageBox.critical(self, "Calculation Error", str(worker.error))
+            return
+        episodes_to_exclude, details, result = worker.result
 
         self._filtered_episodes_info = details
         self.show_filtered_btn.setEnabled(len(self._filtered_episodes_info) > 0)
         self._refresh_filtered_dialog_if_open()
 
         try:
-            filtered_codes = {ep[0] for ep in episodes_to_exclude}
             parent_app = self.window()
             if hasattr(parent_app, "stations_widget"):
-                parent_app.stations_widget.set_filtered_codes(filtered_codes)
+                parent_app.stations_widget.set_excluded_episodes(episodes_to_exclude)
                 parent_app.stations_widget.update_station_map()
         except Exception:
             pass
 
-        try:
-            result = datum_math.sigma_theta_from_covariance(sol, Cx, episodes_to_exclude)
-        except datum_math.DatumError as exc:
-            QMessageBox.warning(self, "Data Error", str(exc))
+        if isinstance(result, datum_math.DatumError):
+            QMessageBox.warning(self, "Data Error", str(result))
             return
-        except np.linalg.LinAlgError as e:
+        if isinstance(result, np.linalg.LinAlgError):
             benchmark.cancel(sigma_bench)
             self._clear_computed_products()
-            logger.exception("SigmaTheta computation error")
-            QMessageBox.critical(self, "Calculation Error", str(e))
+            logger.error(f"SigmaTheta computation error: {result}")
+            QMessageBox.critical(self, "Calculation Error", str(result))
             return
 
         sigma_theta = result.sigma_theta
         self.sigma_theta_matrix = sigma_theta
         self.filtered_solution_estimate = result.filtered_sol
         self.filtered_row_idx = result.row_idx
+        self._datum_run = (sol, Cx, episodes_to_exclude, details, applied, result)
 
         self.cross_corr_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
@@ -2716,57 +2917,69 @@ class DatumWidget(QWidget):
             logger.exception("Export error")
             QMessageBox.critical(self, "Error", f"Failed to export matrix: {e}")
 
-    def _build_stats_report(self) -> str:
+    def _source_stem(self) -> str:
         parent_app = self.window()
-        filename = ""
+        name = ""
         if hasattr(parent_app, "current_data") and parent_app.current_data:
-            filename = parent_app.current_data.get("metadata", {}).get("filename", "")
-        var_factor = None
-        if hasattr(parent_app, "get_variance_factor"):
-            var_factor = parent_app.get_variance_factor()
-        sol = None
-        if hasattr(parent_app, "current_data") and parent_app.current_data:
-            sol = parent_app.current_data["blocks"].get("SOLUTION/ESTIMATE")
-        return reporting.build_stats_report(
-            filename, var_factor, self._filter_tag(), self.sigma_theta_matrix,
-            self.cross_correlation_matrix, self.helmert_params, sol,
-            getattr(self, "_filtered_episodes_info", []), self.is_filtered(),
+            name = parent_app.current_data["metadata"].get("filename", "")
+        return Path(name).stem
+
+    def _build_diagnostics(self):
+        sol, Cx, excluded, details, applied, result = self._datum_run
+        parent_app = self.window()
+        data = getattr(parent_app, "current_data", None) or {}
+        return reporting.build_diagnostics(
+            sol, Cx, applied, excluded, details, result,
+            self.cross_correlation_matrix, self.helmert_params,
+            data.get("metadata", {}).get("filename", ""),
+            getattr(parent_app, "_source_path", None), data.get("header"),
+            self._episode_labels() or None,
         )
 
-    def export_stats_report(self):
+    def _episode_labels(self):
+        return getattr(self.window(), "episode_labels", None) or {}
+
+    def export_diagnostics_report(self):
         if (
-            self.sigma_theta_matrix is None
+            self._datum_run is None
             or self.cross_correlation_matrix is None
             or self.helmert_params is None
         ):
             QMessageBox.warning(
-                self, "Statistics Report",
+                self, "Diagnostics Report",
                 "Compute SigmaTheta, Cross Correlations, and Helmert Parameters first."
             )
             return
 
-        parent_app = self.window()
-        original_file = ""
-        if hasattr(parent_app, "current_data") and parent_app.current_data:
-            original_file = parent_app.current_data["metadata"].get("filename", "")
         filter_suffix = self._filter_tag() if self.is_filtered() else ""
-        def_name = f"{Path(original_file).stem}_datum_stats{filter_suffix}.txt"
-
+        def_name = reporting.report_name(self._source_stem(), filter_suffix)
         out_file, _ = QFileDialog.getSaveFileName(
-            self, "Save Statistics Report", default_save_path(def_name), "Text Files (*.txt)"
+            self, "Save Diagnostics Report", default_save_path(def_name), "Text Files (*.txt)"
         )
         if not out_file:
             return
         remember_dialog_dir(out_file)
         out_file = ensure_suffix(out_file, ".txt")
+        self._append_section("Diagnostics report")
+        self.stats_btn.setEnabled(False)
+        run_task(self._build_diagnostics, (), lambda worker: self._diagnostics_done(worker, out_file),
+                 "Building the diagnostics report")
+
+    def _diagnostics_done(self, worker, out_file):
+        self._update_stats_button()
+        if worker.error is not None:
+            logger.error(f"diagnostics report error: {worker.error}")
+            QMessageBox.critical(self, "Error", f"Failed to build the report: {worker.error}")
+            return
         try:
-            report = self._build_stats_report()
-            with open(out_file, "w", encoding="utf-8") as f:
-                f.write(report)
-            self._append_status(f"exported statistics report to {out_file}")
+            written = reporting.write_report(worker.result, out_file)
+            for name in written:
+                self._append_status(f"exported diagnostics report to {name}")
         except Exception as e:
-            logger.exception("Statistics report export error")
+            logger.exception("Diagnostics report export error")
             QMessageBox.critical(self, "Error", f"Failed to export report: {e}")
+
+
 #################################
 class MatrixInspectorDialog(QDialog):
     def __init__(self, host: "DatumWidget", parent=None):
@@ -3111,8 +3324,10 @@ class FilteredStationsDialog(QDialog):
             self.table.setModel(model)
             return
 
+        labels = self.host._episode_labels()
         rows = []
         for it in info:
+            label = labels.get((it.get("code"), it.get("pt", ""), it.get("soln"))) or {}
             # Parameters column
             params = []
             pos_excess = it.get("pos_excess", float("nan"))
@@ -3127,6 +3342,8 @@ class FilteredStationsDialog(QDialog):
                     "Episode": it.get("label", ""),  # CODE.PT.SOLN
                     "PT": it.get("pt", ""),
                     "SOLN": it.get("soln", ""),
+                    "Span": label.get("span", ""),
+                    "Break": label.get("break", ""),
                     "Parameters": params_str,
                     "Pos excess (m)": it.get("pos_excess", np.nan),
                     "Vel excess (m/yr)": it.get("vel_excess", np.nan),

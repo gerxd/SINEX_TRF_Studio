@@ -37,3 +37,6 @@ SINEX Test Files/
 
 # The one comparison export above 1 MB
 SINEX_TRF_STUDIO_COMPARISON_EXPORTS/v1.0/ITRF2020-u2023-IDS-TRF_SOLUTION_MATRIX_ESTIMATE L COVA.xlsx
+
+# Local library of parsed files
+library/

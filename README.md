@@ -3,7 +3,7 @@
 
 SINEX TRF Studio is a PyQt6-based desktop Processing Software with Applications to Global and Regional Terrestrial Reference Frames for the SINEX File Format. The software is intended to support inspection of solution estimates, covariance structures, normal-equation recovery, and datum-related diagnostics within a single desktop workflow.
 
-This software is developed as part of a dissertation for the International Hellenic University
+This software was initially developed as part of a dissertation for the International Hellenic University and is currently under active development
 
 ## Installation
 
@@ -19,34 +19,6 @@ uv run main.py
 ```
 
 A public example dataset is provided at `examples/BKG08457.SNX`.
-
-## Command line
-
-Every analysis the window performs is also available without it. The command line
-imports no Qt at all, so it runs on a machine with no display.
-
-```bash
-python -m sinex_parser.cli parse FILE.SNX
-python -m sinex_parser.cli datum FILE.SNX --out results/ --formats csv,xlsx,npy
-python -m sinex_parser.cli normal FILE.SNX --variance-factor 1.0 --out results/
-```
-
-`datum` writes sigma theta, the cross correlations, the Helmert parameters and a
-statistics report, using the same file names the window would use. Add `--plots`
-to save the figures as png. Filtering thresholds are `--pos-threshold` in metres
-and `--vel-threshold` in metres per year, and `--no-filter` uses every episode.
-
-`normal` needs `--variance-factor` for any file with no `SOLUTION/STATISTICS`
-block, which includes every real ITRF file. It writes the normal matrix, the u
-vector and the apriori covariance, and prints the recomputation check. Rank is an
-SVD and costs O(n^3), so it runs only with `--rank`.
-
-For the same inputs the command line writes byte identical files to the window.
-The command line is complementary to the window, not a replacement, and nothing
-was taken out of the window to build it.
-
-`docs/CLI_GUIDE.md` documents every command and flag, the output naming rules,
-the format precision table and the exit codes.
 
 ## Core Capabilities
 
@@ -70,7 +42,7 @@ beside the window so it keeps responding. Results are identical to earlier versi
 ## Usage Guide
 
 1. Launch the application and click **Select SINEX File**.
-2. Open a `.snx` file. 
+2. Open a `.snx` or `.snx.gz` file, or pick a file loaded before from **Library**. 
 3. Wait for parsing to finish. The header panel will show the detected active variance factor, the number of stations found, and whether an apriori covariance block is available.
 4. If the variance factor is missing, use **Edit** next to **Variance Factor** to compute the normal matrix. The bundled example `examples/BKG08457.SNX` requires this.
 
@@ -79,8 +51,8 @@ beside the window so it keeps responding. Results are identical to earlier versi
 The User Interface is split between tabs, each for a specific workflow:
 
 - **Covariance Matrix**: inspect the loaded covariance, compute the normal matrix, compute `u = N * (Xest - Xapr)`, run the recomputation check, and export the resulting arrays.
-- **Datum Effect**: calculate SigmaTheta, optionally apply a STDEV filtering pass or **manually select episodes** using the Manual Episode Selection Button, then compute cross correlations and Helmert parameters using the corresponding buttons.
-- **Stations**: review station records and inspect the station map. Filtered stations can be highlighted after datum filtering. 
+- **Datum Effect**: calculate SigmaTheta, optionally apply a STDEV filtering pass or **manually select episodes** using the Manual Episode Selection Button, then compute cross correlations and Helmert parameters using the corresponding buttons. **Diagnostics report** writes every datum product and its checks as text and JSON.
+- **Stations**: review station records and inspect the station map, one marker per episode, kept or filtered after datum filtering. **Load discontinuity list** labels each episode with the reason for its break from an ITRF discontinuity file.
 - **Block Export**: preview the blocks the file holds and export several at once, with
   parameter labels for the matrices and a manifest of the files written.
 - **Information**: check the version, the authors and dependency information.
@@ -102,6 +74,29 @@ The User Interface is split between tabs, each for a specific workflow:
 | `sinex_parser/ui/` | widgets, dialogs and window state |
 | `sinex_parser/cli.py` | the command line |
 | `sinex_parser/core.py` | logging, benchmarking, matrix helpers |
+
+## Command line
+
+Every analysis in the window also runs from the command line, which needs no display.
+Run it from the project folder:
+
+```bash
+.venv/Scripts/python.exe -m sinex_parser.cli COMMAND FILE.SNX [options]
+```
+
+On macOS and Linux use `.venv/bin/python`. `FILE.SNX` can also be a `.snx.gz` file.
+
+| Command | Use | Example |
+|---|---|---|
+| `parse` | list the blocks a file holds | `parse FILE.SNX --json` |
+| `datum` | Sigma Theta, cross correlations, Helmert parameters and the diagnostics report | `datum FILE.SNX --out results/ --formats csv,npy --pos-threshold 0.01 --vel-threshold 0.001` |
+| `datum` | the same from every episode, with figures | `datum FILE.SNX --out results/ --no-filter --plots` |
+| `report` | the diagnostics report only | `report FILE.SNX --out results/` |
+| `normal` | normal matrix, u vector and the recomputation check; ITRF files need `--variance-factor` | `normal FILE.SNX --variance-factor 1.0 --out results/` |
+| `normal` | the same, plus the rank of N (slow for large files) | `normal FILE.SNX --variance-factor 1.0 --rank` |
+
+`--json` prints a JSON summary. `-v` or `-vv` before the command shows more of the log.
+`docs/CLI_GUIDE.md` lists every option.
 
 ## License and Citation
 

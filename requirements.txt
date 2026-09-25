@@ -1,19 +1,47 @@
+# Exact versions, tested together. Results are verified identical within this set.
+
 # Core dependencies
-numpy>=1.19.0
-pandas>=1.1.0
-matplotlib>=3.3.0
-seaborn>=0.11.0
+numpy==2.5.3
+pandas==3.0.6
+matplotlib==3.11.2
+seaborn==0.13.2
 
 # GUI
-PyQt6>=6.5.0
-PyQt6-WebEngine>=6.5.0
-pyqtgraph>=0.13.0
+PyQt6==6.11.0
+PyQt6-WebEngine==6.11.0
+pyqtgraph==0.14.0
 
 # Mapping and visualization
-folium>=0.12.0
+folium==0.20.0
 
 # Excel I/O (used via pandas)
-openpyxl>=3.0.0
+openpyxl==3.1.5
 
 # Desktop notifications
-plyer>=2.0.0
+plyer==2.1.0
+
+# Installed with the packages above
+branca==0.8.2
+certifi==2026.7.22
+charset-normalizer==3.5.1
+colorama==0.4.6
+contourpy==1.4.0
+cycler==0.12.1
+et-xmlfile==2.0.0
+fonttools==4.66.0
+idna==3.20
+jinja2==3.1.6
+kiwisolver==1.5.1
+markupsafe==3.0.3
+packaging==26.3
+pillow==12.3.0
+pyparsing==3.3.3
+pyqt6-qt6==6.11.2
+pyqt6-sip==13.12.0
+pyqt6-webengine-qt6==6.11.2
+python-dateutil==2.9.0.post0
+requests==2.34.2
+six==1.17.0
+tzdata==2026.4
+urllib3==2.8.0
+xyzservices==2026.9.1

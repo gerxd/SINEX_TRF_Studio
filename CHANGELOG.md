@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.5.0
+
+Changes:
+- The statistics report is now the diagnostics report, written as text and JSON. It holds
+  the provenance of the file and the run, Sigma Theta with its checks, the ten largest
+  cross correlations, the Helmert sigmas in SI and literature units (mm, ppb, mas) beside
+  the unfiltered ones, a table in the literature parameter order, the network geometry
+  and the input precision
+- The command line has a `report` command with the same filter flags as `datum`. `datum`
+  writes the diagnostics report where it wrote the statistics report
+- `.gz` SINEX files open directly, in the window and on the command line
+- Loaded files are kept in a library of binary copies, so the next load skips the text
+  parse. A library entry is opened memory mapped: the matrix stays on disk and is read
+  as the computations need it. On ITRF2020-u2023-IGS-TRF (9.9 GB, n = 27426) the first
+  load takes about 110 s and writes the covariance straight to disk, with 0.4 GiB of
+  private memory. The entry is 5.6 GiB on disk and opens in about 0.1 s, and reading the
+  whole matrix from it takes 4 to 6 s
+- Sigma Theta with the episode filter on builds the filtered covariance in one copy
+  instead of two. On ITRF2020-u2023-IGS-TRF at 10 mm and 1 mm/yr its peak memory went
+  from 8.1 to 4.1 GiB and its time from 10.1 to 8.2 s
+- The Library window, opened from the Library button, lists the kept files. An entry can
+  be loaded or deleted from there. Settings, Library has "Library folder..." and "Keep a
+  binary copy of loaded files", which is on by default
+- SOLUTION/EPOCHS is parsed when "Skip parsing SOLUTION/EPOCHS" is off
+- "Load discontinuity list" in the Stations tab reads an ITRF discontinuity file
+  (SOLUTION/DISCONTINUITY), plain or .gz. Every episode shows its data span and the reason
+  for the break that starts it, in the filtered episodes dialog, the diagnostics report,
+  the map popups and the station panel
+- The map shows one marker per episode, coloured kept or filtered. Episodes at the same
+  site sit in a small ring around it
+- The map is built once per file. Selecting a station, the kept and filtered toggles, a new
+  Sigma Theta and a discontinuity list update the open map instead of reloading it. At IGS
+  scale a station click takes about 0.1 s instead of about 11 s
+- Sigma Theta runs beside the window, and the progress bar names the running step
+- A load from the library logs each block with its size and the time the load took
+- The station list is sorted alphabetically, and the first station in that order is
+  selected after a load
+- The Library window has an "Open folder" button that opens the library folder in the
+  file manager
+- The Visualizer options keep their size when the window is made smaller. The panel
+  scrolls instead of squashing its controls, and the two PyQtGraph buttons share a row
+- Dependencies are pinned to exact versions, updated to numpy 2.5.3, pandas 3.0.6,
+  matplotlib 3.11.2 and the Qt 6.11.2 runtime. The launcher rebuilds the environment
+  once on the next start
+- "Record benchmark", "Skip file validation" and "Skip parsing SOLUTION/EPOCHS" moved from
+  the header into the Settings menu. The two skip options are in Settings, Parsing, which
+  replaces "Parsing defaults". "Record benchmark" and "Export benchmark report..." sit
+  together in Settings. The Select SINEX File and Library buttons use the freed space
+- These options are kept across runs. A change made with a file loaded applies to the
+  next load, and the log says so
+
+Fixes:
+- The "NEW FILE" and "New File" lines and "Cleared previous results" appear only when a
+  file was loaded before. A .gz file is named by its .gz name in the load lines
+- In the station list, the Windows 11 selection marker no longer covers the station code
+
 ## 1.4.2
 
 Changes:

@@ -522,10 +522,10 @@ def sigma_theta_from_covariance(sol, Cx, episodes_to_exclude):
 
     if keep_mask.all():
         filtered_sol = sol
-        filtered_Cx = Cx
+        kept = None
     else:
         filtered_sol = [p for p, k in zip(sol, keep_mask) if k]
-        filtered_Cx = Cx[np.ix_(keep_mask, keep_mask)]
+        kept = np.flatnonzero(keep_mask)
 
 
     # filtered_sol = [p for p, k in zip(sol, keep_mask) if k] removed with v1.1
@@ -548,11 +548,12 @@ def sigma_theta_from_covariance(sol, Cx, episodes_to_exclude):
         )
     # Extract covariance submatrix for coordinates actually used in Helmert transformation
 
-    if row_idx.size == filtered_Cx.shape[0] and np.array_equal(
-            row_idx, np.arange(filtered_Cx.shape[0])):
-        Cx_sub = filtered_Cx
+    if row_idx.size == len(filtered_sol) and np.array_equal(
+            row_idx, np.arange(len(filtered_sol))):
+        Cx_sub = Cx if kept is None else Cx[np.ix_(kept, kept)]
     else:
-        Cx_sub = filtered_Cx[np.ix_(row_idx, row_idx)]
+        idx = row_idx if kept is None else kept[row_idx]
+        Cx_sub = Cx[np.ix_(idx, idx)]
 
     # Cx_sub = filtered_Cx[np.ix_(row_idx, row_idx)] removed with v1.1
 

@@ -1,5 +1,6 @@
 import multiprocessing
 import sys
+from pathlib import Path
 
 from sinex_parser import bootstrap
 
@@ -9,6 +10,8 @@ def main() -> None:
     if code is None:
         from PyQt6.QtWidgets import QApplication
 
+        from sinex_parser.io import library
+        library.PROGRAM_DIR = Path(sys.argv[0]).resolve().parent
         from sinex_parser.ui.main_window import SINEXParserApp
 
         app = QApplication(sys.argv)

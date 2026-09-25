@@ -39,7 +39,12 @@ line needs the Python install.
 .venv/Scripts/python.exe -m sinex_parser.cli datum --help
 ```
 
-Three commands: `parse`, `datum`, `normal`.
+Four commands: `parse`, `datum`, `report`, `normal`.
+
+Every command also takes a `.gz` file. It is decompressed to a temporary file in the
+system temporary folder, parsed like the plain file, and deleted after the parse.
+Output names use the name without `.gz`. The command line does not use the library
+of the window.
 
 ## Global options
 
@@ -96,7 +101,7 @@ which decides which of the other two commands can run at all.
 ## datum
 
 The datum effect analysis: sigma theta, the cross correlations and the Helmert
-parameters, plus the statistics report. This is the ITRF path, and the one to reach
+parameters, plus the diagnostics report. This is the ITRF path, and the one to reach
 for on real reference frame files.
 
 ```bash
@@ -135,7 +140,8 @@ For a file named `STEM.SNX`, and a filter tag described below:
 | `STEM_sigma_theta<tag>.<ext>` | the sigma theta matrix |
 | `STEM_cross_correlations<tag>.<ext>` | the cross correlation matrix |
 | `STEM_helmert_parameters<tag>.<ext>` | the Helmert parameters |
-| `STEM_datum_stats<tag>.txt` | the statistics report, always txt |
+| `STEM_diagnostics<tag>.txt` | the diagnostics report, see `report` below |
+| `STEM_diagnostics<tag>.json` | the same report at full precision |
 
 With `--plots`, three more at 150 dpi:
 
@@ -179,6 +185,68 @@ wrote <path>
 
 `episodes used` is the count that reached the geometry, which is what the sigma
 theta dimension follows from.
+
+Since 1.5 the diagnostics report replaces the statistics report, `STEM_datum_stats<tag>.txt`.
+
+## report
+
+The diagnostics report of the datum: every number needed to judge Sigma Theta, the
+cross correlations and the Helmert parameters, in one text file for reading and one
+JSON file for scripts. `datum` writes the same report beside the products. `report`
+writes the report alone: it computes the same products as `datum`, with the same
+filter, and copies them into the report unchanged.
+
+```bash
+.venv/Scripts/python.exe -m sinex_parser.cli report FILE.SNX --out DIR [options]
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--out DIR` | `.` | directory to write into, created if missing |
+| `--pos-threshold M` | `0.05` | position sigma threshold in metres |
+| `--vel-threshold M` | `0.003` | velocity sigma threshold in metres per year |
+| `--no-filter` | off | use every episode, skip threshold filtering |
+
+The filter flags are the ones `datum` takes, so the same flags give the same Sigma
+Theta and the same filter tag.
+
+### What it writes
+
+| File | Contents |
+|---|---|
+| `STEM_diagnostics<tag>.txt` | the report, numbers to 6 significant digits |
+| `STEM_diagnostics<tag>.json` | the same content at full precision |
+
+The JSON floats round trip, so the Sigma Theta, cross correlation and Helmert values
+in it are bit identical to the `.npy` files `datum` writes. Values that are not
+finite are written as `null`.
+
+### Contents
+
+- Provenance: file name, size, SHA-256, the agency and data span from the `%=SNX`
+  header line, the number of parameters, stations and station episodes, the
+  application, Python, numpy and BLAS versions, the date with its UTC offset, the
+  reference epochs of the positions used, with a warning when they differ, and the
+  filter with its tag.
+- Sigma Theta: the matrix, its diagonal, condition number, symmetry error,
+  eigenvalues, smallest eigenvalue, the count of negative diagonal entries, and the
+  traces of the translation, scale and rotation blocks.
+- Cross correlations: the matrix, the ten largest absolute correlations by
+  parameter name, and the counts of pairs above 0.5 and 0.9.
+- Helmert parameter sigmas: SI units; translations in mm, scale in ppb, rotations in
+  mas, scale and rotations also in mm at the surface with the equatorial radius
+  6378137 m, rates per year; the same sigmas with no episode excluded and the ratio
+  of the two. A second table lists them in the literature order tx, ty, tz, rx, ry,
+  rz, ds and the rates, in mm and mm/yr, so it can be set beside a published table.
+  Rotations follow the IERS sign convention.
+- Network geometry: episodes, stations and stations with velocities used, every
+  excluded episode with its reason and the sigma that triggered it, the rank of E,
+  the condition number of E^T E unscaled and with unit column scaling, episodes per
+  hemisphere, the geocentric latitude and longitude range, and the eigenvalues of
+  the mean outer product of the station unit vectors.
+- Input precision: sigma statistics by parameter type with the median, the
+  covariance sigmas of the used episodes against the excluded ones, and checks on
+  the covariance rows used.
 
 ## normal
 
@@ -296,7 +364,7 @@ mathematical failure on that file rather than a mistake in the command.
 
 ## JSON summary
 
-`parse`, `datum` and `normal` take `--json`. The command then prints one JSON object
+`parse`, `datum`, `report` and `normal` take `--json`. The command then prints one JSON object
 to stdout instead of its usual lines, and writes the same files. Values that are
 not finite are written as `null`.
 
@@ -304,6 +372,7 @@ not finite are written as `null`.
 |---|---|
 | `parse` | `command`, `version`, `file`, `blocks` (shape and dtype, entry count, or value), `parameters`, `station_episodes` |
 | `datum` | `command`, `version`, `file`, `filtered`, `episodes_excluded`, `episodes_used`, `negative_sigma_theta_diagonal`, `helmert` (by name, `tx` to `ez_v`), `written` |
+| `report` | `command`, `version`, `file`, `filtered`, `episodes_excluded`, `episodes_used`, `written` |
 | `normal` | `command`, `version`, `file`, `variance_factor`, `n`, `recomputation_check` (the lines), `written`, and `rank` and `rank_deficiency` with `--rank` |
 
 ```bash
@@ -367,7 +436,7 @@ manifest.
 The analysis path imports no interface library at module level. In practice:
 
 - `parse` and `normal` need numpy, pandas and openpyxl. No Qt, no matplotlib.
-- `datum` without `--plots` is the same.
+- `datum` without `--plots`, and `report`, are the same.
 - `datum --plots` imports matplotlib inside the function and forces the `Agg`
   backend before importing pyplot, so it needs no display either.
 
@@ -383,7 +452,7 @@ The window keeps these, and there is no plan to move them:
 - Manual episode selection, where you tick episodes individually rather than
   setting a threshold.
 - The raw block export tab, which writes any parsed block on its own.
-- The covariance matrix browser, the stations table and the info tab.
+- The covariance matrix browser, the stations table and the Information tab.
 - Themes and settings.
 
 The command line also does not compute the eigenvalue distribution, and it does not

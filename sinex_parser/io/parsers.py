@@ -154,9 +154,12 @@ class MatrixEstimateParser(SinexBlockParser):
 #####################################
 
     # ---- Streaming interface (single-pass, no buffering) ----
-    def init_stream(self, size: int):
+    def init_stream(self, size: int, path=None):
         # Allocate the target matrix up front; lines are fed directly into it
-        self._matrix = np.zeros((size, size), dtype=float)
+        if path is None:
+            self._matrix = np.zeros((size, size), dtype=float)
+        else:
+            self._matrix = np.lib.format.open_memmap(path, mode="w+", dtype=float, shape=(size, size))
         self._should_replace = None
         self._stream_lines = 0
 
@@ -410,6 +413,64 @@ class ParameterParser(SinexBlockParser):
             raise ValueError(f"Unsupported export format: {format}")
         logger.info(f"Exported param data => {filename}")
 
+class TableParser(SinexBlockParser):
+    def validate(self, block_data: List[str]) -> bool:
+        return bool(block_data)
+
+    def export(self, data: List[dict], filename: Path, format: str):
+        df = pd.DataFrame(data)
+        if format == 'xlsx':
+            df.to_excel(filename, index=False)
+        elif format == 'csv':
+            df.to_csv(filename, index=False)
+        elif format == 'txt':
+            df.to_csv(filename, index=False, sep='\t')
+        elif format == 'npy':
+            np.save(filename, plain_records(df))
+        else:
+            raise ValueError(f"Unsupported export format: {format}")
+        logger.info(f"Exported table => {filename}")
+
+
+def _soln(text):
+    return int(text) if text.isdigit() else None
+
+
+class EpochsParser(TableParser):
+    def parse(self, block_data: List[str]) -> List[dict]:
+        rows = []
+        for line in block_data:
+            ln = line.strip()
+            if not ln or ln.startswith('*'):
+                continue
+            t = ln.split()
+            if len(t) < 7:
+                logger.warning(f"Skipping SOLUTION/EPOCHS line: {ln}")
+                continue
+            rows.append({'code': t[0], 'pt': t[1], 'soln': _soln(t[2]), 'obs_code': t[3],
+                         'data_start': t[4], 'data_end': t[5], 'mean_epoch': t[6]})
+        return rows
+
+
+class DiscontinuityParser(TableParser):
+    def parse(self, block_data: List[str]) -> List[dict]:
+        rows = []
+        for line in block_data:
+            ln = line.strip()
+            if not ln or ln.startswith('*'):
+                continue
+            t = ln.split()
+            if len(t) < 7 or t[6] not in ('P', 'V'):
+                logger.warning(f"Skipping SOLUTION/DISCONTINUITY line: {ln}")
+                continue
+            rest = t[7:]
+            if rest and rest[0] == '-':
+                rest = rest[1:]
+            rows.append({'code': t[0], 'pt': t[1], 'soln': _soln(t[2]), 'type': t[6],
+                         'start': t[4], 'end': t[5],
+                         'reason': ' '.join(rest).replace('_', ' ')})
+        return rows
+
 def create_parsers():
     #creates parser instances
     return {
@@ -420,5 +481,6 @@ def create_parsers():
         'SITE/ID': SiteIDParser(),
         'SOLUTION/STATISTICS': SolutionStatisticsParser(),
         'SOLUTION/ESTIMATE': ParameterParser(),
-        'SOLUTION/APRIORI': ParameterParser()
+        'SOLUTION/APRIORI': ParameterParser(),
+        'SOLUTION/EPOCHS': EpochsParser()
     }

@@ -3,6 +3,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 
 from PyQt6.QtGui import QFont, QAction, QActionGroup
 from PyQt6.QtWidgets import (
@@ -35,13 +36,15 @@ from ..core import (
     default_skip_epochs, figure_dpi, set_console_level, get_dialog_dir,
 )
 
-from ..io import create_parsers, parallel
-from ..io import export, raw_export
+from ..io import create_parsers, parallel, library
+from ..io import export, raw_export, reader
+from ..analysis import episodes
 from ..ui.widgets import (
-    ParserWorker, CovarianceMatrixWidget, StationsWidget, run_task,
+    ParserWorker, CovarianceMatrixWidget, StationsWidget, run_task, TASK_SIGNALS,
     InfoWidget, DatumWidget, FileInfoWidget, QPlainTextEditLogger,
     make_section_header, set_status, tone_color
 )
+from .library_window import LibraryWindow
 
 
 class SINEXParserApp(QMainWindow):
@@ -54,8 +57,14 @@ class SINEXParserApp(QMainWindow):
         self.custom_variance_factor = None
         self._parse_generation = 0
         self._active_workers = set()
+        self._file_loaded = False
         self._source_path = None
         self._raw_export_running = False
+        self._library_entry = None
+        self._library_fallback_logged = False
+        self.discontinuities = []
+        self.episode_labels = {}
+        self._keep_binary = get_app_setting('library/keep', True) not in (False, 'false')
         self._theme = get_app_setting('ui/theme', 'light') or 'light'
         self._log_visible = get_app_setting('ui/log_visible', True) not in (False, 'false')
         self._remember_geometry = get_app_setting('ui/remember_geometry', False) in (True, 'true')
@@ -66,6 +75,7 @@ class SINEXParserApp(QMainWindow):
         self._console_level = int(get_app_setting('log/console_level', logging.WARNING)
                                   or logging.WARNING)
         self._remember_filter = get_app_setting('filter/remember', False) in (True, 'true')
+        self._record_benchmark = get_app_setting('benchmark/record', False) in (True, 'true')
         parallel.ENABLED = get_app_setting('parse/parallel', True) not in (False, 'false')
         parallel.MAX_WORKERS = int(get_app_setting('parse/workers', 4) or 4)
         self._apply_log_settings()
@@ -74,6 +84,7 @@ class SINEXParserApp(QMainWindow):
         self.init_ui()
         self.benchmark_updated.connect(self._refresh_benchmark_button)
         benchmark.on_update = self.benchmark_updated.emit
+        benchmark.set_enabled(self._record_benchmark)
         # warning
         logger.warning(f"======== SINEX TRF Studio version {__version__} ========")
         logger.warning(" ")
@@ -120,59 +131,31 @@ class SINEXParserApp(QMainWindow):
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(8)
 
+        self.select_file_button = QPushButton("Select SINEX File")
+        self.select_file_button.setFont(QFont('Arial', 16))
+        self.select_file_button.setFixedSize(440, 64)
+        self.select_file_button.clicked.connect(self.select_sinex_file)
+        controls_layout.addWidget(self.select_file_button)
+
         file_row = QHBoxLayout()
         file_row.setContentsMargins(0, 0, 0, 0)
         file_row.setSpacing(8)
 
-        self.select_file_button = QPushButton("Select SINEX File")
-        self.select_file_button.setFont(QFont('Arial', 16))
-        self.select_file_button.setFixedSize(500, 60)
-        self.select_file_button.clicked.connect(self.select_sinex_file)
-        file_row.addWidget(self.select_file_button)
+        self.library_button = QPushButton("Library")
+        self.library_button.setFont(QFont('Arial', 16))
+        self.library_button.setFixedSize(372, 56)
+        self.library_button.setToolTip("Files kept in the library")
+        self.library_button.clicked.connect(self.show_library)
+        file_row.addWidget(self.library_button)
 
         self.settings_button = QPushButton("⚙")
         self.settings_button.setFont(QFont('Arial', 16))
-        self.settings_button.setFixedSize(60, 60)
+        self.settings_button.setFixedSize(60, 56)
         self.settings_button.setToolTip("Settings")
         self.settings_button.clicked.connect(self._show_settings_menu)
         file_row.addWidget(self.settings_button)
 
         controls_layout.addLayout(file_row)
-
-        self.benchmark_checkbox = QCheckBox("Record benchmark")
-        self.benchmark_checkbox.setChecked(False)
-        self.benchmark_checkbox.setToolTip(
-            "Record timings and peak process memory"   
-        )
-        self.benchmark_checkbox.toggled.connect(self._set_benchmark_enabled)
-
-        self.benchmark_export_button = QPushButton("Export Benchmark Report")
-        self.benchmark_export_button.setEnabled(False)
-        self.benchmark_export_button.clicked.connect(self.export_benchmark_report)
-
-        benchmark_row = QHBoxLayout()
-        benchmark_row.addWidget(self.benchmark_checkbox)
-        benchmark_row.addWidget(self.benchmark_export_button)
-        controls_layout.addLayout(benchmark_row)
-
-        self.skip_validation = QCheckBox("Skip file validation")
-        self.skip_validation.setChecked(default_skip_validation())
-        self.skip_validation.setToolTip(
-            "When enabled, the parser skips the block-structure validation pass\n"
-            "before parsing. Saves time on large files from trusted sources."
-        )
-        self.skip_validation.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.WhatsThisCursor))
-        controls_layout.addWidget(self.skip_validation)
-
-        self.skip_epoch = QCheckBox("Skip parsing SOLUTION/EPOCHS")
-        self.skip_epoch.setChecked(default_skip_epochs())
-        self.skip_epoch.setToolTip(
-            "When enabled, the parser will ignore the SOLUTION/EPOCHS block\n"
-            "to speed up parsing for very large files."
-        )
-        self.skip_epoch.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.WhatsThisCursor))
-
-        controls_layout.addWidget(self.skip_epoch)
         controls_layout.addStretch()
 
         controls_widget = QWidget()
@@ -185,7 +168,13 @@ class SINEXParserApp(QMainWindow):
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(True)
-        main_layout.addWidget(self.progress_bar)
+        self.progress_label = QLabel()
+        self.progress_label.setVisible(False)
+        progress_row = QHBoxLayout()
+        progress_row.addWidget(self.progress_label)
+        progress_row.addWidget(self.progress_bar, 1)
+        main_layout.addLayout(progress_row)
+        TASK_SIGNALS.busy.connect(self._show_task)
 
         self.tab_widget = QTabWidget()
         tab_font = self.tab_widget.font()
@@ -206,6 +195,7 @@ class SINEXParserApp(QMainWindow):
         self.tab_widget.addTab(self.datum_widget, "Datum Effect")
         # Tab3: Stations
         self.stations_widget = StationsWidget()
+        self.stations_widget.discontinuity_btn.clicked.connect(self.load_discontinuity_list)
         self.tab_widget.addTab(self.stations_widget, "Stations")
         QQuickWidget(self).hide()
 
@@ -359,6 +349,7 @@ class SINEXParserApp(QMainWindow):
 
     def _build_settings_menu(self):
         settings_menu = QMenu(self)
+        settings_menu.setToolTipsVisible(True)
         self._settings_menu = settings_menu
 
         theme_menu = settings_menu.addMenu('Theme')
@@ -427,19 +418,27 @@ class SINEXParserApp(QMainWindow):
             self._dpi_group.addAction(act)
             dpi_menu.addAction(act)
 
-        parse_menu = settings_menu.addMenu('Parsing defaults')
+        parse_menu = settings_menu.addMenu('Parsing')
+        parse_menu.setToolTipsVisible(True)
 
         self._skip_validation_action = QAction('Skip file validation', self, checkable=True)
         self._skip_validation_action.setChecked(default_skip_validation())
+        self._skip_validation_action.setToolTip(
+            "Skip the block structure validation pass before parsing.\n"
+            "Saves time on large files from trusted sources.")
         self._skip_validation_action.triggered.connect(
-            lambda checked: self._set_parse_default('parse/skip_validation', checked))
+            lambda checked: self.set_parse_option('parse/skip_validation', checked))
         parse_menu.addAction(self._skip_validation_action)
 
         self._skip_epochs_action = QAction('Skip parsing SOLUTION/EPOCHS', self, checkable=True)
         self._skip_epochs_action.setChecked(default_skip_epochs())
+        self._skip_epochs_action.setToolTip(
+            "Ignore the SOLUTION/EPOCHS block to speed up parsing of very large files.\n"
+            "Episode data spans need this block.")
         self._skip_epochs_action.triggered.connect(
-            lambda checked: self._set_parse_default('parse/skip_epochs', checked))
+            lambda checked: self.set_parse_option('parse/skip_epochs', checked))
         parse_menu.addAction(self._skip_epochs_action)
+        parse_menu.addSeparator()
 
         self._parallel_action = QAction('Parse large files in parallel', self, checkable=True)
         self._parallel_action.setChecked(parallel.ENABLED)
@@ -461,6 +460,21 @@ class SINEXParserApp(QMainWindow):
         self._remember_filter_action.triggered.connect(self._toggle_remember_filter)
         parse_menu.addAction(self._remember_filter_action)
 
+        library_menu = settings_menu.addMenu('Library')
+
+        self._keep_binary_action = QAction('Keep a binary copy of loaded files', self, checkable=True)
+        self._keep_binary_action.setChecked(self._keep_binary)
+        self._keep_binary_action.triggered.connect(self._toggle_keep_binary)
+        library_menu.addAction(self._keep_binary_action)
+
+        self._library_dir_action = QAction('', self)
+        self._library_dir_action.setEnabled(False)
+        library_menu.addAction(self._library_dir_action)
+
+        choose_library = QAction('Library folder...', self)
+        choose_library.triggered.connect(self._choose_library_dir)
+        library_menu.addAction(choose_library)
+
         shortcut_menu = settings_menu.addMenu('Create desktop shortcut')
         for name, native in (('run_windows.bat', os.name == 'nt'),
                              ('run_macos_linux.sh', os.name != 'nt')):
@@ -470,6 +484,17 @@ class SINEXParserApp(QMainWindow):
             shortcut_menu.addAction(act)
 
         settings_menu.addSeparator()
+
+        self._benchmark_action = QAction('Record benchmark', self, checkable=True)
+        self._benchmark_action.setChecked(self._record_benchmark)
+        self._benchmark_action.setToolTip("Record timings and peak process memory")
+        self._benchmark_action.triggered.connect(self._set_benchmark_enabled)
+        settings_menu.addAction(self._benchmark_action)
+
+        self._benchmark_export_action = QAction('Export benchmark report...', self)
+        self._benchmark_export_action.setEnabled(benchmark.has_data())
+        self._benchmark_export_action.triggered.connect(self.export_benchmark_report)
+        settings_menu.addAction(self._benchmark_export_action)
 
         log_menu = settings_menu.addMenu('Log file')
 
@@ -514,6 +539,7 @@ class SINEXParserApp(QMainWindow):
 
         self._refresh_log_path_action()
         self._refresh_export_dir_action()
+        self._refresh_library_dir_action()
 
     def _apply_theme(self, name: str, store: bool = False):
         scheme = {
@@ -607,12 +633,50 @@ class SINEXParserApp(QMainWindow):
         parallel.MAX_WORKERS = n
         set_app_setting('parse/workers', n)
 
-    def _set_parse_default(self, key: str, checked: bool):
+    def _toggle_keep_binary(self, checked: bool):
+        self._keep_binary = bool(checked)
+        set_app_setting('library/keep', self._keep_binary)
+
+    def _refresh_library_dir_action(self):
+        text = str(self.library_root())
+        self._library_dir_action.setToolTip(text)
+        self._library_dir_action.setText(text if len(text) <= 60 else '...' + text[-57:])
+
+    def _choose_library_dir(self):
+        chosen = QFileDialog.getExistingDirectory(self, "Choose library folder", str(self.library_root().parent))
+        if not chosen:
+            return
+        set_app_setting('library/dir', chosen)
+        logger.info(f"Library folder: {self.library_root()}")
+        self._refresh_library_dir_action()
+
+    def library_root(self) -> Path:
+        chosen = get_app_setting('library/dir', '')
+        if chosen:
+            return Path(chosen) / library.FOLDER_NAME
+        root = (library.PROGRAM_DIR or PROGRAM_DIR) / 'library'
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            tempfile.TemporaryFile(dir=root).close()
+            return root
+        except OSError:
+            fallback = Path(QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.AppDataLocation)) / 'library'
+            if not self._library_fallback_logged:
+                self._library_fallback_logged = True
+                logger.warning(f"The program folder is not writable, the library is in {fallback}")
+            return fallback
+
+    def show_library(self):
+        self._library_window = LibraryWindow(self)
+        self._library_window.show()
+
+    def set_parse_option(self, key: str, checked: bool):
         set_app_setting(key, bool(checked))
-        if key == 'parse/skip_validation':
-            self.skip_validation.setChecked(bool(checked))
-        else:
-            self.skip_epoch.setChecked(bool(checked))
+        action = self._skip_validation_action if key == 'parse/skip_validation' else self._skip_epochs_action
+        action.setChecked(bool(checked))
+        if self._file_loaded or self._active_workers:
+            logger.info(f"{action.text()} is {'on' if checked else 'off'}, it applies to the next load")
 
     def _toggle_remember_filter(self, checked: bool):
         self._remember_filter = bool(checked)
@@ -681,11 +745,14 @@ class SINEXParserApp(QMainWindow):
         super().closeEvent(event)
 
     def _set_benchmark_enabled(self, enabled: bool) -> None:
-        benchmark.set_enabled(bool(enabled))
+        self._record_benchmark = bool(enabled)
+        set_app_setting('benchmark/record', self._record_benchmark)
+        self._benchmark_action.setChecked(self._record_benchmark)
+        benchmark.set_enabled(self._record_benchmark)
         self._refresh_benchmark_button()
 
     def _refresh_benchmark_button(self) -> None:
-        self.benchmark_export_button.setEnabled(benchmark.has_data())
+        self._benchmark_export_action.setEnabled(benchmark.has_data())
 
     def export_benchmark_report(self) -> None:
         if not benchmark.has_data():
@@ -713,36 +780,52 @@ class SINEXParserApp(QMainWindow):
             self,
             "Select SINEX File",
             default_save_path(""),
-            "SINEX files (*.sinex *.snx);;All files (*.*)"
+            "SINEX files (*.sinex *.snx *.snx.gz *.gz);;All files (*.*)"
         )
         if fname:
             remember_dialog_dir(fname)
+            self.start_parse(Path(fname))
+
+    def load_library_entry(self, folder, source):
+        self.start_parse(Path(source), entry=Path(folder))
+
+    def start_parse(self, fpath, entry=None):
+        if self._file_loaded:
             logger.info("----- New File -----")
-            fpath = Path(fname)
 
-            logger.info(f"Selected SINEX file: {fpath.name}")
-            if self.file_info_widget:  # Update new widget
-                self.file_info_widget.clear_display()  # Clear previous info
+        logger.info(f"Selected SINEX file: {fpath.name}")
+        if self.file_info_widget:  # Update new widget
+            self.file_info_widget.clear_display()  # Clear previous info
 
-            self.progress_bar.setVisible(True)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        skip_epochs = default_skip_epochs()
+        skip_val = default_skip_validation()
+        self._parse_generation += 1
+        try:
+            size = fpath.stat().st_size
+        except OSError:
+            size = 0
+
+        benchmark.start_file(fpath.name, size, generation=self._parse_generation)
+        worker = ParserWorker(fpath, create_parsers(), skip_epochs_block=skip_epochs, skip_validation=skip_val,
+                              library_root=self.library_root(), keep=self._keep_binary, entry=entry)
+        # tag worker with the current parse generation so a stale worker that finishes late cannot overwrite newer data
+        worker.parse_generation = self._parse_generation
+        self._active_workers.add(worker)
+        worker.finished.connect(self.handle_parsing_complete)
+        worker.error.connect(self.handle_parsing_error)
+        self.worker = worker
+        worker.start()
+
+    def _show_task(self, label):
+        self.progress_label.setText(label)
+        self.progress_label.setVisible(bool(label))
+        if label:
             self.progress_bar.setRange(0, 0)
-            skip_epochs = self.skip_epoch.isChecked()
-            skip_val = self.skip_validation.isChecked()
-            self._parse_generation += 1
-            try:
-                size = fpath.stat().st_size
-            except OSError:
-                size = 0
-
-            benchmark.start_file(fpath.name, size, generation=self._parse_generation)
-            worker = ParserWorker(fpath, create_parsers(), skip_epochs_block=skip_epochs, skip_validation=skip_val)
-            # tag worker with the current parse generation so a stale worker that finishes late cannot overwrite newer data
-            worker.parse_generation = self._parse_generation
-            self._active_workers.add(worker)
-            worker.finished.connect(self.handle_parsing_complete)
-            worker.error.connect(self.handle_parsing_error)
-            self.worker = worker
-            worker.start()
+            self.progress_bar.setVisible(True)
+        elif not self._active_workers:
+            self.progress_bar.setVisible(False)
 
     def get_loaded_matrix(self) -> np.ndarray:
         if not self.current_data:
@@ -779,14 +862,15 @@ class SINEXParserApp(QMainWindow):
         # Update with the new data
         self.current_data = data
         self.custom_variance_factor = None
+        self._file_loaded = True
         if self.datum_widget:
-            filename = data.get("metadata", {}).get("filename", "")
-            self.datum_widget.log_new_file_loaded(filename)
+            self.datum_widget.log_new_file_loaded(Path(self.worker.filename).name)
         #reset computed data from any previous file
         if self.covariance_widget and self.covariance_widget.operations_widget:
             self.covariance_widget.operations_widget.reset_for_new_file()
         self.progress_bar.setVisible(False)
         self._source_path = Path(self.worker.filename)
+        self._library_entry = self.worker.library_entry
         self.file_label.setText(self._source_path.name)
         self._refresh_benchmark_button()
         # update ui
@@ -798,13 +882,16 @@ class SINEXParserApp(QMainWindow):
         # Update the visualization widget
         self.covariance_widget.setup_data(data['blocks'])
         site_data = data['blocks'].get('SITE/ID')
+        self._update_episode_labels()
+        station_episodes = episodes.positions(data['blocks'].get('SOLUTION/ESTIMATE'))
         if site_data:
-            logger.info(f"Parsed {len(site_data)} stations from SITE/ID.")
-            self.stations_widget.set_data(site_data)
+            if not self.worker.reused:
+                logger.info(f"Parsed {len(site_data)} stations from SITE/ID.")
+            self.stations_widget.set_data(site_data, station_episodes)
         else:
             logger.info("No SITE/ID data found.")
             # clear stations left over from any previous file
-            self.stations_widget.set_data([])
+            self.stations_widget.set_data([], station_episodes)
         self._refresh_raw_blocks()
         QMessageBox.information(self, "Success", "SINEX file parsed successfully!")
         self._notify("SINEX file parsed successfully!")
@@ -841,9 +928,35 @@ class SINEXParserApp(QMainWindow):
         if self.covariance_widget:
             self.covariance_widget.setup_data({})
         if self.stations_widget:
+            self._update_episode_labels()
             self.stations_widget.set_data([])
         self._source_path = None
+        self._library_entry = None
         self._refresh_raw_blocks()
+
+    def _update_episode_labels(self):
+        blocks = (self.current_data or {}).get('blocks', {})
+        self.episode_labels = episodes.labels(blocks.get('SOLUTION/EPOCHS'), self.discontinuities)
+        self.stations_widget.labels = self.episode_labels
+
+    def load_discontinuity_list(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load discontinuity list", get_dialog_dir(),
+            "SINEX files (*.snx *.SNX *.gz);;All files (*)")
+        if not path:
+            return
+        remember_dialog_dir(path)
+        try:
+            records = reader.read_discontinuities(path)
+        except Exception as exc:
+            logger.error(f"Discontinuity list not read: {exc}")
+            QMessageBox.warning(self, "Discontinuity list", str(exc))
+            return
+        self.discontinuities = records
+        self.stations_widget.discontinuity_label.setText(f"{Path(path).name}: {len(records)} records")
+        self._update_episode_labels()
+        self.stations_widget.update_station_map()
+        self.datum_widget._refresh_filtered_dialog_if_open()
 
     def _raw_ext(self):
         return export.FORMAT_EXTENSIONS[self.format_combo.currentText()][1:]
@@ -1028,7 +1141,7 @@ class SINEXParserApp(QMainWindow):
         logger.info(f"Raw export of {len(keys)} blocks as .{ext} to {folder}")
         run_task(raw_export.export_blocks,
                  (blocks, keys, folder, ext, source_name, self._source_path, labels, manifest),
-                 self._raw_export_done)
+                 self._raw_export_done, "Exporting blocks")
 
     def _raw_export_done(self, worker):
         self._raw_export_running = False
@@ -1079,7 +1192,7 @@ class SINEXParserApp(QMainWindow):
                 QMessageBox.critical(self, "Error", "No parser for matrix export!")
                 return
             run_task(matrix_parser.export, (arr, Path(out_file), extension[1:]),
-                     lambda w: self._operations_export_done(w, orig_file))
+                     lambda w: self._operations_export_done(w, orig_file), "Exporting the matrix")
 
     def _operations_export_done(self, worker, orig_file):
         if worker.error is not None:

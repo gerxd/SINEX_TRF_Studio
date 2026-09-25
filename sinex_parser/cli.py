@@ -10,7 +10,7 @@ import numpy as np
 from . import __version__
 from .analysis import datum, normal, reporting
 from .core import logger, ensure_suffix
-from .io import create_parsers, export, reader
+from .io import create_parsers, export, library
 
 COVA_KEYS = ("SOLUTION/MATRIX_ESTIMATE L COVA", "SOLUTION/MATRIX_ESTIMATE U COVA")
 APRIORI_KEYS = ("SOLUTION/MATRIX_APRIORI L COVA", "SOLUTION/MATRIX_APRIORI U COVA")
@@ -33,7 +33,7 @@ def _load(path):
     path = Path(path)
     if not path.is_file():
         raise CliError(f"no such file: {path}")
-    return reader.parse_sinex_file(path, create_parsers())
+    return library.load(path, create_parsers())[0]
 
 
 def _first_block(blocks, keys):
@@ -152,15 +152,8 @@ def cmd_datum(args):
     written += _write(result.sigma_theta, out_dir, stem, "sigma_theta", tag, formats)
     written += _write(cross_corr, out_dir, stem, "cross_correlations", tag, formats)
     written += _write(helmert, out_dir, stem, "helmert_parameters", tag, formats)
-
-    report = reporting.build_stats_report(
-        data["metadata"]["filename"], blocks.get("SOLUTION/STATISTICS"), tag,
-        result.sigma_theta, cross_corr,
-        helmert, sol, details, datum.is_filtered(applied, details),
-    )
-    report_file = out_dir / f"{stem}_datum_stats{tag}.txt"
-    report_file.write_text(report, encoding="utf-8")
-    written.append(str(report_file))
+    written += _write_report(args, data, sol, Cx, applied, excluded, details, result,
+                             cross_corr, helmert, out_dir, stem, tag)
 
     if args.plots:
         import matplotlib
@@ -187,6 +180,51 @@ def cmd_datum(args):
     print(f"episodes excluded: {len(details)}")
     print(f"episodes used: {result.n_episodes}")
     print(f"sigma theta: {result.sigma_theta.shape[0]}x{result.sigma_theta.shape[1]}")
+    for name in written:
+        print(f"wrote {name}")
+    return 0
+
+
+def _write_report(args, data, sol, Cx, applied, excluded, details, result, cross_corr,
+                  helmert, out_dir, stem, tag):
+    report = reporting.build_diagnostics(
+        sol, Cx, applied, excluded, details, result, cross_corr, helmert,
+        data["metadata"]["filename"], args.file, data.get("header"))
+    return reporting.write_report(report, out_dir / reporting.report_name(stem, tag))
+
+
+def cmd_report(args):
+    data = _load(args.file)
+    blocks = data["blocks"]
+    Cx = _require_cova(blocks)
+    sol = datum.index_ordered(_require_estimate(blocks), Cx.shape[0])
+
+    applied = _applied_filter(args)
+    excluded, details = datum.select_excluded_episodes(sol, Cx, applied)
+    result = datum.sigma_theta_from_covariance(sol, Cx, excluded)
+    cross_corr = datum.cross_correlations(result.sigma_theta)
+    helmert = datum.helmert_parameters(result.sigma_theta)
+
+    tag = datum.filter_tag(applied, details)
+    stem = Path(data["metadata"]["filename"]).stem
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written = _write_report(args, data, sol, Cx, applied, excluded, details, result,
+                            cross_corr, helmert, out_dir, stem, tag)
+
+    if args.json:
+        _print_json({
+            "command": "report", "version": __version__,
+            "file": data["metadata"]["filename"],
+            "filtered": datum.is_filtered(applied, details),
+            "episodes_excluded": len(details),
+            "episodes_used": result.n_episodes,
+            "written": written,
+        })
+        return 0
+    print(f"episodes excluded: {len(details)}")
+    print(f"episodes used: {result.n_episodes}")
     for name in written:
         print(f"wrote {name}")
     return 0
@@ -288,6 +326,17 @@ def build_parser():
     p.add_argument("--plots", action="store_true", help="also save figures as png")
     p.add_argument("--json", action="store_true", help="print the summary as JSON")
     p.set_defaults(func=cmd_datum)
+
+    p = sub.add_parser("report", help="diagnostics report of the datum, as text and JSON")
+    p.add_argument("file")
+    p.add_argument("--out", default=".", help="directory to write the report into")
+    p.add_argument("--pos-threshold", type=float, default=0.05,
+                   help="position sigma threshold in metres")
+    p.add_argument("--vel-threshold", type=float, default=0.003,
+                   help="velocity sigma threshold in metres per year")
+    p.add_argument("--no-filter", action="store_true", help="use every episode")
+    p.add_argument("--json", action="store_true", help="print the summary as JSON")
+    p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("normal", help="normal matrix, u vector and the recomputation check")
     p.add_argument("file")
