@@ -1,77 +1,62 @@
 # Command line guide
 
-SINEX TRF Studio 1.4 runs its whole analysis without the desktop window. This
-guide covers every command, every flag, what gets written, and what the command
-line cannot do.
+The command line runs the SINEX TRF Studio analysis without the window. The window and the
+command line use the same functions in `sinex_parser/analysis/`. With the same input and the
+same settings, they give the same numbers.
 
-The window and the command line call the same functions in `sinex_parser/analysis/`,
-so for the same input and the same settings they produce the same numbers.
+## Start the command line
 
-## Why it exists
-
-Three reasons, in the order they matter:
-
-1. A machine with no display can run the analysis. Nothing on the analysis path
-   imports Qt, matplotlib, pyqtgraph, folium or plyer at module level, so a server
-   or a cluster node needs none of them installed for `parse` and the matrix work.
-2. A run can be scripted and repeated. The window needs a person to click through
-   it, which is not a workflow you can put in a shell loop or a job script.
-3. It makes the outputs checkable. Two interfaces producing the same bytes is a
-   much stronger statement than one interface producing bytes nobody compares.
-
-## Invoking it
+On Windows:
 
 ```bash
 .venv/Scripts/python.exe -m sinex_parser.cli <command> [options]
 ```
 
-The program name in help text and errors is `sinex-trf`. There is no installed
-console script, so run it through `-m`.
+On macOS and Linux, use `.venv/bin/python`. The launcher creates `.venv` when it runs for the
+first time.
 
-The standalone build produced by `build_nuitka.ps1` is the window only. Its entry
-point is `main.py` and it is compiled with the Windows console disabled, so the
-command line is not reachable from the executable. A machine that needs the command
-line needs the Python install.
+The program name in the help text and in error messages is `sinex-trf`. There is no installed
+console script, so use `-m`.
+
+The standalone build from `build_nuitka.ps1` contains only the window. To use the command
+line, use the Python install.
 
 ```bash
-.venv/Scripts/python.exe -m sinex_parser.cli --version    # SINEX TRF Studio 1.4.0
+.venv/Scripts/python.exe -m sinex_parser.cli --version
 .venv/Scripts/python.exe -m sinex_parser.cli --help
 .venv/Scripts/python.exe -m sinex_parser.cli datum --help
 ```
 
-Four commands: `parse`, `datum`, `report`, `normal`.
+| Command | Result |
+|---|---|
+| `parse` | a list of the blocks in a file |
+| `datum` | Sigma Theta, cross correlations, Helmert parameters and the diagnostics report |
+| `report` | the diagnostics report only |
+| `normal` | the normal matrix, the u vector and the recomputation check |
 
-Every command also takes a `.gz` file. It is decompressed to a temporary file in the
-system temporary folder, parsed like the plain file, and deleted after the parse.
-Output names use the name without `.gz`. The command line does not use the library
-of the window.
+All commands accept a `.gz` file. The command line decompresses the file into the system
+temporary folder, reads it, and then deletes the temporary file. The output names do not
+include `.gz`. The command line does not use the library of the window.
 
 ## Global options
 
+Put these options before the command.
+
 | Option | Effect |
 |---|---|
-| `--version` | print the version and exit |
-| `-v` | set the application logger to INFO |
-| `-vv` | set the application logger to DEBUG |
-| `-h`, `--help` | help, also available per command |
+| `--version` | print the version and stop |
+| `-v` | show log messages at level INFO |
+| `-vv` | show log messages at level DEBUG |
+| `-h`, `--help` | show the help, also for each command |
 
-Both verbosity levels write to stderr, so `2>/dev/null` separates the log from the
-results on stdout.
+Log messages go to stderr. Results go to stdout. To hide the log, add `2>/dev/null`.
 
-Verbosity applies to the application's own logger only. Third party libraries log
-to the root logger, which the application no longer configures, so their output
-does not appear whatever you pass.
-
-The command line does not write `sinex_parser.log`. It clears the handlers the
-package installs at import and attaches its own stderr handler, so a run leaves no
-file behind in the working directory. The window still writes the log file, and
-since v1.4 the settings menu controls where it goes, how large it may grow, and
-whether it is written at all.
+The `-v` options apply only to the log of the application. Messages from other libraries do
+not show. The command line does not write `sinex_parser.log`.
 
 ## parse
 
-Reports what a file contains. It reads the file, builds every block, and prints an
-inventory. Nothing is written to disk.
+`parse` reads a file and lists its blocks. It writes no files.
 
 ```bash
 .venv/Scripts/python.exe -m sinex_parser.cli parse examples/BKG08457.SNX
@@ -89,89 +74,115 @@ parameters: 39
 station episodes with complete xyz: 13
 ```
 
-List blocks report their entry count, matrix blocks report shape and dtype, and
-anything else prints its value. The last two lines are the parameter count from
-`SOLUTION/ESTIMATE` and the number of station episodes that carry a complete XYZ
-triple, which is what the datum geometry can actually use.
+A list block shows its number of entries. A matrix block shows its shape and data type. Other
+blocks show their value. The last two lines show:
 
-Use `parse` first on an unfamiliar file. It tells you in seconds whether the file
-carries a covariance block, an apriori block or a `SOLUTION/STATISTICS` block,
-which decides which of the other two commands can run at all.
+- The number of parameters in `SOLUTION/ESTIMATE`.
+- The number of station episodes with complete X, Y and Z coordinates. The datum calculation
+  uses only these episodes.
+
+Use `parse` first on a new file. The output shows if the file has a covariance block, an
+apriori block and a `SOLUTION/STATISTICS` block. These blocks decide which commands can run.
 
 ## datum
 
-The datum effect analysis: sigma theta, the cross correlations and the Helmert
-parameters, plus the diagnostics report. This is the ITRF path, and the one to reach
-for on real reference frame files.
+`datum` calculates Sigma Theta, the cross correlations and the Helmert parameters, and writes
+the diagnostics report. Use this command for ITRF files.
 
 ```bash
 .venv/Scripts/python.exe -m sinex_parser.cli datum FILE.SNX --out DIR [options]
 ```
 
-| Option | Default | Meaning |
+| Option | Default | Effect |
 |---|---|---|
-| `--out DIR` | `.` | directory to write into, created if missing |
-| `--formats LIST` | `csv` | comma separated, any of `xlsx`, `csv`, `txt`, `npy` |
-| `--pos-threshold M` | `0.05` | position sigma threshold in metres |
-| `--vel-threshold M` | `0.003` | velocity sigma threshold in metres per year |
-| `--no-filter` | off | use every episode, skip threshold filtering |
-| `--plots` | off | also save the three figures as png |
+| `--out DIR` | `.` | output folder, created if it does not exist |
+| `--formats LIST` | `csv` | a comma separated list of `xlsx`, `csv`, `txt`, `npy` |
+| `--pos-threshold M` | `0.05` | position sigma threshold, in metres |
+| `--vel-threshold M` | `0.003` | velocity sigma threshold, in metres per year |
+| `--no-filter` | off | use all episodes |
+| `--plots` | off | also write the three figures as PNG |
+| `--dpi N` | `150` | resolution of the PNG figures |
+| `--bare` | off | write the matrices without parameter names and units |
+| `--json` | off | print a JSON summary, see [JSON summary](#json-summary) |
 
-It needs a `SOLUTION/MATRIX_ESTIMATE L COVA` or `U COVA` block and a
-`SOLUTION/ESTIMATE` block. It reads the covariance directly and never builds the
-normal matrix, so it works on files with no `SOLUTION/STATISTICS` block, which is
-every real ITRF file.
+The file must have a `SOLUTION/MATRIX_ESTIMATE L COVA` or `U COVA` block and a
+`SOLUTION/ESTIMATE` block. The command reads the covariance matrix directly and does not
+build the normal matrix. For this reason, it does not need a `SOLUTION/STATISTICS` block. ITRF files do
+not have this block.
 
-### Filtering
+### Episode filter
 
-By default the episode filter is on. An episode is excluded when its position sigma
-exceeds `--pos-threshold` or its velocity sigma exceeds `--vel-threshold`. Pass
-`--no-filter` to keep everything.
+The filter is on by default. It excludes an episode if the position sigma is more than
+`--pos-threshold` or the velocity sigma is more than `--vel-threshold`. To keep all
+episodes, use `--no-filter`.
 
-The manual episode selection offered by the window is not available here. The
-command line filter is threshold based only.
+The command line has no manual episode selection. The filter uses the thresholds only.
 
-### What it writes
+### Output files
 
-For a file named `STEM.SNX`, and a filter tag described below:
+For an input file `STEM.SNX`:
 
 | File | Contents |
 |---|---|
-| `STEM_sigma_theta<tag>.<ext>` | the sigma theta matrix |
+| `STEM_sigma_theta<tag>.<ext>` | Sigma Theta |
 | `STEM_cross_correlations<tag>.<ext>` | the cross correlation matrix |
-| `STEM_helmert_parameters<tag>.<ext>` | the Helmert parameters |
-| `STEM_diagnostics<tag>.txt` | the diagnostics report, see `report` below |
+| `STEM_helmert_parameters<tag>.<ext>` | the Helmert parameter sigmas |
+| `STEM_diagnostics<tag>.txt` | the diagnostics report, see [report](#report) |
 | `STEM_diagnostics<tag>.json` | the same report at full precision |
 
-With `--plots`, three more at 150 dpi:
+With `--plots`, the command also writes `STEM_sigma_theta<tag>.png`,
+`STEM_cross_correlations<tag>.png` and `STEM_helmert_parameters<tag>.png`.
 
-| File |
-|---|
-| `STEM_sigma_theta<tag>.png` |
-| `STEM_cross_correlations<tag>.png` |
-| `STEM_helmert_parameters<tag>.png` |
+The window uses the same file names. You can compare the output of the two interfaces
+file by file. `<tag>` is the filter tag, see [Filter tag](#filter-tag).
 
-The names are the window's names. That is deliberate, so that output from either
-interface drops into the same directory layout and can be compared file by file.
+### Labels
 
-### The filter tag
+The `.csv`, `.txt` and `.xlsx` files contain the parameter names `tx`, `ty`, `tz`, `ds`,
+`rx`, `ry` and `rz`. For 14 parameters, the rates `tx_dot` to `rz_dot` follow.
 
-The tag is empty when nothing was filtered out, either because filtering was off or
-because no episode crossed a threshold. When episodes were excluded the tag records
-the thresholds in millimetres:
+- Sigma Theta has a header row and a first column with the name and unit, for example
+  `tx [m]`, `ds [-]` and `rx_dot [rad/yr]`. The unit of entry (i, j) is the unit of row i
+  multiplied by the unit of column j. In `.txt`, the first line starts with `#` and gives
+  this rule.
+- The cross correlations have names only.
+- The Helmert parameters are a table with the columns `parameter`, `unit` and `sigma`.
+
+The units are `m`, `-` for the scale, `rad`, and `m/yr`, `1/yr` and `rad/yr` for the rates.
+In `.txt`, a label that contains a space is in quotes.
+
+The labels do not change the values. `.npy` files have no labels. To write all files without
+labels, use `--bare`. In the window, use Settings > Export defaults > Export datum matrices
+without labels.
+
+To read a labelled file with pandas and keep all digits, use `float_precision="round_trip"`:
+
+```python
+pd.read_csv("STEM_sigma_theta.csv", index_col=0, float_precision="round_trip")
+pd.read_csv("STEM_sigma_theta.txt", sep=" ", comment="#", index_col=0,
+            float_precision="round_trip")
+```
+
+### Filter tag
+
+If the filter excludes no episode, the tag is empty. This occurs when the filter is off, or
+when no episode is more than a threshold. If the filter excludes episodes, the tag gives the
+thresholds in millimetres:
 
 ```
 _filtered_p{pos_mm}mm_v{vel_mm}mmyr
 ```
 
-So `--pos-threshold 0.010 --vel-threshold 0.001` gives
-`_filtered_p10mm_v1mmyr`, and the default thresholds give `_filtered_p50mm_v3mmyr`.
-The thresholds are rounded to whole millimetres for the name only, never for the
-mathematics.
+| Thresholds | Tag |
+|---|---|
+| `--pos-threshold 0.010 --vel-threshold 0.001` | `_filtered_p10mm_v1mmyr` |
+| defaults, 0.05 and 0.003 | `_filtered_p50mm_v3mmyr` |
+| `--pos-threshold 0.0015 --vel-threshold 0.0025` | `_filtered_p1p5mm_v2p5mmyr` |
 
-A run that excludes nothing writes unsuffixed names. Two runs at different
-thresholds that both exclude nothing therefore write to the same filenames and the
-second overwrites the first. Give them separate `--out` directories.
+The tag changes only the file name. It does not change the calculation.
+
+Two runs that exclude no episode write the same file names, and the second run overwrites the
+first. To keep both, use a different `--out` folder for each run.
 
 ### Console output
 
@@ -183,110 +194,121 @@ wrote <path>
 ...
 ```
 
-`episodes used` is the count that reached the geometry, which is what the sigma
-theta dimension follows from.
-
-Since 1.5 the diagnostics report replaces the statistics report, `STEM_datum_stats<tag>.txt`.
+`episodes used` is the number of episodes in the calculation. The size of Sigma Theta follows
+from it.
 
 ## report
 
-The diagnostics report of the datum: every number needed to judge Sigma Theta, the
-cross correlations and the Helmert parameters, in one text file for reading and one
-JSON file for scripts. `datum` writes the same report beside the products. `report`
-writes the report alone: it computes the same products as `datum`, with the same
-filter, and copies them into the report unchanged.
+`report` writes only the diagnostics report. It calculates the same products as `datum`, with
+the same filter, and writes them into the report without changes. `datum` writes the same
+report next to its products.
 
 ```bash
 .venv/Scripts/python.exe -m sinex_parser.cli report FILE.SNX --out DIR [options]
 ```
 
-| Option | Default | Meaning |
+| Option | Default | Effect |
 |---|---|---|
-| `--out DIR` | `.` | directory to write into, created if missing |
-| `--pos-threshold M` | `0.05` | position sigma threshold in metres |
-| `--vel-threshold M` | `0.003` | velocity sigma threshold in metres per year |
-| `--no-filter` | off | use every episode, skip threshold filtering |
+| `--out DIR` | `.` | output folder, created if it does not exist |
+| `--pos-threshold M` | `0.05` | position sigma threshold, in metres |
+| `--vel-threshold M` | `0.003` | velocity sigma threshold, in metres per year |
+| `--no-filter` | off | use all episodes |
+| `--json` | off | print a JSON summary |
 
-The filter flags are the ones `datum` takes, so the same flags give the same Sigma
-Theta and the same filter tag.
+The filter options are the same as for `datum`. The same options give the same Sigma Theta
+and the same filter tag.
 
-### What it writes
+### Output files
 
 | File | Contents |
 |---|---|
-| `STEM_diagnostics<tag>.txt` | the report, numbers to 6 significant digits |
-| `STEM_diagnostics<tag>.json` | the same content at full precision |
+| `STEM_diagnostics<tag>.txt` | the report, with numbers to 6 significant digits |
+| `STEM_diagnostics<tag>.json` | the same report at full precision |
 
-The JSON floats round trip, so the Sigma Theta, cross correlation and Helmert values
-in it are bit identical to the `.npy` files `datum` writes. Values that are not
-finite are written as `null`.
+The JSON numbers round trip. The Sigma Theta, cross correlation and Helmert values in the JSON
+file are bit identical to the `.npy` files from `datum`. Values that are not finite are
+`null`.
 
-### Contents
+### Report contents
 
-- Provenance: file name, size, SHA-256, the agency and data span from the `%=SNX`
-  header line, the number of parameters, stations and station episodes, the
-  application, Python, numpy and BLAS versions, the date with its UTC offset, the
-  reference epochs of the positions used, with a warning when they differ, and the
-  filter with its tag.
-- Sigma Theta: the matrix, its diagonal, condition number, symmetry error,
-  eigenvalues, smallest eigenvalue, the count of negative diagonal entries, and the
-  traces of the translation, scale and rotation blocks.
-- Cross correlations: the matrix, the ten largest absolute correlations by
-  parameter name, and the counts of pairs above 0.5 and 0.9.
-- Helmert parameter sigmas: SI units; translations in mm, scale in ppb, rotations in
-  mas, scale and rotations also in mm at the surface with the equatorial radius
-  6378137 m, rates per year; the same sigmas with no episode excluded and the ratio
-  of the two. A second table lists them in the literature order tx, ty, tz, rx, ry,
-  rz, ds and the rates, in mm and mm/yr, so it can be set beside a published table.
-  Rotations follow the IERS sign convention.
-- Network geometry: episodes, stations and stations with velocities used, every
-  excluded episode with its reason and the sigma that triggered it, the rank of E,
-  the condition number of E^T E unscaled and with unit column scaling, episodes per
-  hemisphere, the geocentric latitude and longitude range, and the eigenvalues of
-  the mean outer product of the station unit vectors.
-- Input precision: sigma statistics by parameter type with the median, the
-  covariance sigmas of the used episodes against the excluded ones, and checks on
-  the covariance rows used.
+- Provenance:
+  - The file name, size and SHA-256.
+  - The agency and data span from the `%=SNX` header line.
+  - The number of parameters, stations and station episodes.
+  - The application, Python, NumPy and BLAS versions.
+  - The date with its UTC offset.
+  - The reference epochs of the positions, with a warning if they are not all the same.
+  - The filter and its tag.
+- Sigma Theta:
+  - The matrix and its diagonal.
+  - The condition number, the symmetry error and the eigenvalues.
+  - The number of negative diagonal entries.
+  - The traces of the translation, scale and rotation blocks.
+- Cross correlations:
+  - The matrix.
+  - The ten largest absolute correlations, by parameter name.
+  - The number of pairs above 0.5 and above 0.9.
+- Helmert parameter sigmas:
+  - SI units.
+  - Translations in mm, scale in ppb and rotations in mas. Scale and rotations also in mm at
+    the surface, with the equatorial radius 6378137 m. Rates per year.
+  - The same sigmas with no episode excluded, and the ratio of the two.
+  - A table in the literature order tx, ty, tz, rx, ry, rz, ds and the rates, in mm and mm/yr.
+    Use it to compare with a published table. Rotations use the IERS sign convention.
+- Network geometry:
+  - The episodes, stations and stations with velocities in the calculation.
+  - Each excluded episode, with the reason and the sigma that caused it.
+  - The rank of E.
+  - The condition number of E^T E, without scaling and with unit column scaling.
+  - The episodes in each hemisphere, and the range of geocentric latitude and longitude.
+  - The eigenvalues of the mean outer product of the station unit vectors.
+- Input precision:
+  - Sigma statistics for each parameter type, with the median.
+  - The covariance sigmas of the used episodes and of the excluded episodes.
+  - Checks on the covariance rows in the calculation.
 
 ## normal
 
-The normal equation path: N, the u vector, the apriori covariance, and the
+`normal` calculates the normal matrix N, the u vector and the apriori covariance, and does the
 recomputation check.
 
 ```bash
 .venv/Scripts/python.exe -m sinex_parser.cli normal FILE.SNX --out DIR [options]
 ```
 
-| Option | Default | Meaning |
+| Option | Default | Effect |
 |---|---|---|
-| `--out DIR` | `.` | directory to write into, created if missing |
-| `--formats LIST` | `csv` | comma separated, any of `xlsx`, `csv`, `txt`, `npy` |
+| `--out DIR` | `.` | output folder, created if it does not exist |
+| `--formats LIST` | `csv` | a comma separated list of `xlsx`, `csv`, `txt`, `npy` |
 | `--variance-factor F` | from the file | the a posteriori variance factor |
-| `--rank` | off | also compute rank(N) by SVD |
+| `--rank` | off | also calculate rank(N) by SVD |
+| `--json` | off | print a JSON summary |
 
-It needs a covariance block, `SOLUTION/ESTIMATE` and `SOLUTION/APRIORI`. It builds
-N by inverting the covariance and scaling by the variance factor.
+The file must have a covariance block and a `SOLUTION/ESTIMATE` block. The command inverts the
+covariance matrix and scales it by the variance factor to get N. Without a
+`SOLUTION/APRIORI` block, the command does not calculate u and does not do the recomputation
+check.
 
-### The variance factor rule
+### Variance factor
 
-The factor comes from the file's `SOLUTION/STATISTICS` block. Real ITRF files do
-not carry one. In that case the command stops with an explanation instead of
-producing nothing:
+The command reads the variance factor from the `SOLUTION/STATISTICS` block. ITRF files do not
+have this block. In this case, the command stops with this error:
 
 ```
 error: this file has no SOLUTION/STATISTICS block, so there is no variance factor
 to read. Pass --variance-factor explicitly.
 ```
 
-Pass `--variance-factor 1.0` to proceed. That is a choice about the mathematics,
-not a formality: N is scaled by it, so u and dx scale with it too. Passing the flag
-when the file does have a block overrides the block.
+To continue, give the factor, for example `--variance-factor 1.0`. The factor scales N,
+and u and dx change with it. If the file has a `SOLUTION/STATISTICS` block,
+`--variance-factor` replaces its value.
 
-This is the same rule the window applies, where it asks for the factor in a dialog.
+The window uses the same rule. It asks for the factor in a dialog.
 
-### The recomputation check
+### Recomputation check
 
-Printed on every run. It solves back from N and u and compares to the original dx:
+The command prints the check on each run. It solves for dx from N and u and compares the
+result with the original dx:
 
 ```
 ------ Performing Recomputation Check ------
@@ -298,120 +320,113 @@ Relative Error: 9.926979e-13 (or 0.0000%)
 PASS: relative_error <= 1e-6
 ```
 
-A FAIL here means the inverse did not round trip, which on a real file points at a
-rank deficient or badly conditioned covariance block rather than at a bug.
+A FAIL result shows that the inverse did not round trip. On a real file, the usual cause is a
+covariance block that is rank deficient or badly conditioned.
 
 ### Rank
 
-`--rank` is off by default because `np.linalg.matrix_rank` is a full singular value
-decomposition, which is O(n^3) and dominates everything else at ITRF size. The
-handover measures about 29 minutes at n = 25000. At n = 39 it is immediate:
+`--rank` is off by default. `np.linalg.matrix_rank` does a full singular value decomposition,
+which is O(n^3). For large ITRF files, it takes much more time than all other steps. For
+n = 25000, the estimate is approximately 29 minutes. For n = 39, it is immediate:
 
 ```
 rank(N) = 39 of 39, deficiency 0, 0.000 s
 ```
 
-Turn it on when you actually need the rank deficiency, which for a datum analysis
-is usually to confirm the expected seven parameter deficiency.
+Use `--rank` when you need the rank deficiency, for example to confirm the expected
+deficiency of seven parameters.
 
-### What it writes
+### Output files
 
 | File | Contents |
 |---|---|
 | `STEM_NormalMatrix.<ext>` | N |
 | `STEM_u_Vector.<ext>` | u |
-| `STEM_Covariance_Apriori_Matrix.<ext>` | the apriori covariance, when the file carries one |
+| `STEM_Covariance_Apriori_Matrix.<ext>` | the apriori covariance, if the file has one |
 
-These names carry no filter tag, because the normal equation path does no episode
-filtering.
+These names have no filter tag, because `normal` does not filter episodes.
 
 ## Formats and precision
 
-`--formats` takes any combination, so `--formats csv,txt,npy,xlsx` writes all four
-in one pass. An unknown name is refused before anything is written. `.xlsx` is
-refused for a matrix of more than 5 million cells.
+`--formats` accepts any combination. For example, `--formats csv,txt,npy,xlsx` writes all
+four formats in one run. The command refuses an unknown format before it writes a file. It
+refuses `.xlsx` for a matrix with more than 5 million cells.
 
-| Format | Written by | Precision | Exact |
+| Format | Writer | Precision | Exact |
 |---|---|---|---|
 | `.npy` | `np.save` | full float64 | yes |
-| `.csv` | `np.savetxt`, comma separated, `%.17g` | full float64, round trips | yes, through text |
-| `.txt` | `np.savetxt`, space separated, `%.17g` | full float64, round trips | yes, through text |
-| `.xlsx` | `pandas.to_excel` through openpyxl | 16 significant digits | no, up to 1 ULP |
+| `.csv` | comma separated, `%.17g` | full float64 | yes, after a text round trip |
+| `.txt` | space separated, `%.17g` | full float64 | yes, after a text round trip |
+| `.xlsx` | `pandas.to_excel` with openpyxl | 16 significant digits | no, up to 1 ULP |
 
-**Use `.npy` when a number has to survive to the next stage of a calculation.** It
-is the only format with no text conversion anywhere in the path.
+**Use `.npy` for values that go into a further calculation.** It is the only format with no
+conversion to text.
 
-`.xlsx` loses the last bit on values whose shortest exact representation needs 17
-significant digits, which is roughly half of them. The error is about 4e-16
-relative, far below the millimetre level uncertainties being reported, so it is
-fine for reading and for a dissertation appendix and wrong for chaining into
-another computation. It is also never byte identical between two runs, because the
-format embeds a creation timestamp. Compare spreadsheets by cell value.
-
-Full detail, including the measured effect of the v1.2 precision change, is in
-`docs/export_hash_check.md`.
+`.xlsx` loses the last bit of values that need 17 significant digits, approximately half of
+all values. The relative error is approximately 4e-16. Use `.xlsx` to read values, not as
+input to a further calculation. Two `.xlsx` files from the same run are never byte identical,
+because the format contains a creation time. Compare spreadsheets by cell value.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 2 | usage error, a missing file, a file that cannot be parsed, a missing required block, or a missing variance factor |
-| 3 | the analysis raised, a `DatumError` or a `NormalMatrixError` |
+| 2 | usage error, missing file, file that cannot be read, missing required block, or missing variance factor |
+| 3 | the calculation failed, with a `DatumError` or a `NormalMatrixError` |
 
-Errors print to stderr with an `error:` prefix. Anything that reaches code 3 is a
-mathematical failure on that file rather than a mistake in the command.
+Errors go to stderr, with the prefix `error:`. Code 3 shows a mathematical failure on the file,
+not an error in the command.
 
 ## JSON summary
 
-`parse`, `datum`, `report` and `normal` take `--json`. The command then prints one JSON object
-to stdout instead of its usual lines, and writes the same files. Values that are
-not finite are written as `null`.
+All four commands accept `--json`. The command then prints one JSON object to stdout in place
+of the usual lines. It writes the same files. Values that are not finite are `null`.
 
 | Command | Keys |
 |---|---|
-| `parse` | `command`, `version`, `file`, `blocks` (shape and dtype, entry count, or value), `parameters`, `station_episodes` |
-| `datum` | `command`, `version`, `file`, `filtered`, `episodes_excluded`, `episodes_used`, `negative_sigma_theta_diagonal`, `helmert` (by name, `tx` to `ez_v`), `written` |
+| `parse` | `command`, `version`, `file`, `blocks` (shape and dtype, number of entries, or value), `parameters`, `station_episodes` |
+| `datum` | `command`, `version`, `file`, `filtered`, `episodes_excluded`, `episodes_used`, `negative_sigma_theta_diagonal`, `helmert` (by name, `tx` to `rz_dot`), `written` |
 | `report` | `command`, `version`, `file`, `filtered`, `episodes_excluded`, `episodes_used`, `written` |
-| `normal` | `command`, `version`, `file`, `variance_factor`, `n`, `recomputation_check` (the lines), `written`, and `rank` and `rank_deficiency` with `--rank` |
+| `normal` | `command`, `version`, `file`, `variance_factor`, `n`, `recomputation_check` (the lines), `written`, and with `--rank` also `rank` and `rank_deficiency` |
 
 ```bash
 .venv/Scripts/python.exe -m sinex_parser.cli datum examples/BKG08457.SNX --out out --json
 ```
 
-## Worked examples
+## Examples
 
-Every product of one file in every format, with figures:
+All products of one file, in all formats, with figures:
 
 ```bash
-.venv/Scripts/python.exe -m sinex_parser.cli datum "SINEX Test Files/ITRF2020/u2023/ITRF2020-u2023-IDS-TRF.SNX" \
+.venv/Scripts/python.exe -m sinex_parser.cli datum ITRF2020-u2023-IDS-TRF.SNX \
   --out out/IDS --formats csv,txt,npy,xlsx --plots
 ```
 
-The reference threshold pair used by the committed comparison exports:
+Thresholds of 10 mm and 1 mm/yr:
 
 ```bash
 .venv/Scripts/python.exe -m sinex_parser.cli datum FILE.SNX --out out/ \
   --pos-threshold 0.010 --vel-threshold 0.001
 ```
 
-Unfiltered, for a run that has to include every episode:
+All episodes, no filter:
 
 ```bash
 .venv/Scripts/python.exe -m sinex_parser.cli datum FILE.SNX --out out/ --no-filter
 ```
 
-Normal equations with an assumed unit variance factor, including rank:
+Normal equations with a variance factor of 1.0, with the rank:
 
 ```bash
 .venv/Scripts/python.exe -m sinex_parser.cli normal FILE.SNX --out out/ \
   --variance-factor 1.0 --rank --formats npy
 ```
 
-A directory of files, one output directory each, in bash:
+All files in a folder, with one output folder for each file, in bash:
 
 ```bash
-for f in "SINEX Test Files"/*.SNX; do
+for f in data/*.SNX; do
   stem=$(basename "$f" .SNX)
   .venv/Scripts/python.exe -m sinex_parser.cli datum "$f" --out "out/$stem" --formats npy,csv
 done
@@ -420,40 +435,32 @@ done
 The same in PowerShell:
 
 ```powershell
-Get-ChildItem "SINEX Test Files\*.SNX" | ForEach-Object {
+Get-ChildItem "data\*.SNX" | ForEach-Object {
     & .venv\Scripts\python.exe -m sinex_parser.cli datum $_.FullName `
         --out "out\$($_.BaseName)" --formats npy,csv
 }
 ```
 
-There is no batch mode inside the program. Batch processing, a progress and cancel
-path, and a machine readable manifest of what succeeded are the v1.4 scope. Until
-then a shell loop is the batch mode, and it has no shared progress reporting and no
-manifest.
+The program has no batch mode. Use a shell loop, as in the examples above.
 
-## Running with no display
+## Use without a display
 
-The analysis path imports no interface library at module level. In practice:
+The analysis does not import an interface library at module level.
 
-- `parse` and `normal` need numpy, pandas and openpyxl. No Qt, no matplotlib.
-- `datum` without `--plots`, and `report`, are the same.
-- `datum --plots` imports matplotlib inside the function and forces the `Agg`
-  backend before importing pyplot, so it needs no display either.
+- `parse`, `normal`, `report`, and `datum` without `--plots` need NumPy, pandas and openpyxl.
+  They do not need Qt or matplotlib.
+- `datum --plots` imports matplotlib with the `Agg` backend. It does not need a display.
 
-Nothing in the command line needs `QT_QPA_PLATFORM` set.
+The command line does not need `QT_QPA_PLATFORM`.
 
-## What the command line does not do
+## Window only
 
-The window keeps these, and there is no plan to move them:
+These functions are in the window only:
 
-- The station map, which is folium in a web engine view.
-- The matrix visualiser, the matrix inspector dialog and the eigenvalue and
-  spectrum views.
-- Manual episode selection, where you tick episodes individually rather than
-  setting a threshold.
-- The raw block export tab, which writes any parsed block on its own.
-- The covariance matrix browser, the stations table and the Information tab.
-- Themes and settings.
-
-The command line also does not compute the eigenvalue distribution, and it does not
-write the benchmark file the window produces.
+- The station map.
+- The matrix visualizer, the matrix inspector and the eigenvalue distribution.
+- Manual episode selection.
+- The Block Export tab, which writes one parsed block.
+- The Covariance Matrix tab, the Stations tab and the Information tab.
+- The theme and the settings.
+- The benchmark report.

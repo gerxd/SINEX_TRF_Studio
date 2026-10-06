@@ -24,12 +24,16 @@ BLOCKS = "blocks.json"
 
 
 def is_compressed(path):
-    return Path(path).suffix.lower() == ".gz"
+    try:
+        with open(path, "rb") as f:
+            return f.read(2) == b"\x1f\x8b"
+    except OSError:
+        return False
 
 
 def plain_name(path):
     path = Path(path)
-    return path.stem if is_compressed(path) else path.name
+    return path.stem if path.suffix.lower() == ".gz" else path.name
 
 
 def _now():
@@ -82,7 +86,8 @@ def entries(root):
     for item in sorted(os.scandir(root), key=lambda e: e.name):
         if not item.is_dir():
             continue
-        if item.name.startswith(".del-"):
+        if item.name.startswith(".del-") or (item.name.startswith(".tmp-")
+                                             and time.time() - item.stat().st_mtime > 86400):
             shutil.rmtree(item.path, ignore_errors=True)
             continue
         if item.name.startswith("."):

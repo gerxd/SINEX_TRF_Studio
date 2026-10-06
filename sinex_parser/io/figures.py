@@ -3,8 +3,6 @@ from pathlib import Path
 
 import numpy as np
 
-from ..core import figure_dpi
-
 FOOTER = "produced with SINEX TRF Studio - Dossas G. - IHU"
 
 HELMERT_LABELS_7 = ["tx", "ty", "tz", "δs", "εx", "εy", "εz"]
@@ -159,7 +157,8 @@ def build_helmert_bar(values, title, subtitle=None):
     if len(present) > 1:
         ax.legend(
             handles=[Patch(facecolor=GROUPS[g][2],
-                           label=f"{g} [{GROUPS[g][1]}]" if GROUPS[g][1] else g)
+                           label=f"{g} [{GROUPS[g][1]}]" + (f", rate [{GROUPS[g][1]}/yr]" if any(rate) else "")
+                           if GROUPS[g][1] else g)
                      for g in present],
             loc="best",
         )
@@ -177,7 +176,7 @@ def add_footer(fig):
              fontsize=8, style="italic", color="gray")
 
 
-def save_datum_figures(out_dir, stem, tag, sigma_theta, cross_corr, helmert, disp_tag=""):
+def save_datum_figures(out_dir, stem, tag, sigma_theta, cross_corr, helmert, disp_tag="", dpi=150):
     import matplotlib.pyplot as plt
 
     out_dir = Path(out_dir)
@@ -191,7 +190,7 @@ def save_datum_figures(out_dir, stem, tag, sigma_theta, cross_corr, helmert, dis
         fig.tight_layout()
         add_footer(fig)
         path = out_dir / f"{stem}_{prefix}{tag}.png"
-        fig.savefig(path, dpi=figure_dpi())
+        fig.savefig(path, dpi=dpi)
         plt.close(fig)
         written.append(str(path))
 
@@ -199,7 +198,7 @@ def save_datum_figures(out_dir, stem, tag, sigma_theta, cross_corr, helmert, dis
                                f"Shape: {helmert.shape}")
     add_footer(fig)
     path = out_dir / f"{stem}_helmert_parameters{tag}.png"
-    fig.savefig(path, dpi=figure_dpi())
+    fig.savefig(path, dpi=dpi)
     plt.close(fig)
     written.append(str(path))
 

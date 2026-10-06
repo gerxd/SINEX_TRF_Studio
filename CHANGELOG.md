@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.1
+
+Changes:
+- Minor tweaks and added row/column labels for Helmert parameter and cross correlation exports
+
+Fixes:
+- Damaged or non-SINEX files are refused with a message instead of loading empty or with wrong values
+- Compressed files are recognised by their content, not only by the `.gz` name
+- A second file cannot start loading while one is still loading
+- Leftover temporary files from earlier sessions are cleaned up
+- The launcher keeps the environment to exactly the listed packages
+- Other bug fixes
+
 ## 1.5.0
 
 Changes:

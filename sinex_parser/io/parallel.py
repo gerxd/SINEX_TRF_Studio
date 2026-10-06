@@ -192,6 +192,8 @@ def stream_block(f, path, matrix, header, executor):
     while pending:
         rows, cols, vals, hdr, count, nlines = pending.popleft().get()
         submit()
+        if rows.size and (min(rows.min(), cols.min()) < 0 or max(rows.max(), cols.max()) >= matrix.shape[0]):
+            raise ValueError("Matrix index out of range in a covariance block")
         if (rows > cols).any() and (rows < cols).any():
             for r, c, v in zip(rows.tolist(), cols.tolist(), vals.tolist()):
                 matrix[r, c] = v

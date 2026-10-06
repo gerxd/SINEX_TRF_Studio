@@ -136,7 +136,7 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
 
                     elif cur_block in block_parsers and len(cur_block_data) > 0:
                         parser = block_parsers[cur_block]
-                        if skip_validation or parser.validate(cur_block_data):
+                        if (skip_validation and cur_block != 'SOLUTION/STATISTICS') or parser.validate(cur_block_data):
                             parsed = parser.parse(cur_block_data)
                             sinex_data['blocks'][cur_block] = parsed
                             logger.info(f"Parsed {cur_block} with {len(cur_block_data)} lines.")
@@ -163,6 +163,8 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
         if check_structure and open_blocks:
             logger.error("Unclosed blocks: " + ", ".join(open_blocks))
             raise SinexStructureError("Invalid SINEX block structure!")
+        if not sinex_data['blocks']:
+            raise ValueError(f"No SINEX blocks were found in {name}.")
         est = sinex_data['blocks'].get('SOLUTION/ESTIMATE')
         if est and any(p.get('index') != i for i, p in enumerate(est, 1)):
             logger.warning("SOLUTION/ESTIMATE is not in INDEX order 1 to n. The datum and normal computations sort it by INDEX, or refuse it if INDEX is not a permutation of 1 to n.")

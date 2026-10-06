@@ -18,6 +18,9 @@ uv pip install -r requirements.txt
 uv run main.py
 ```
 
+On the first start, `main.py` checks the environment, records it in `.venv/.deps_stamp` and
+prints `The environment is ready.` Later starts skip the check until `requirements.txt` changes.
+
 A public example dataset is provided at `examples/BKG08457.SNX`.
 
 ## Core Capabilities

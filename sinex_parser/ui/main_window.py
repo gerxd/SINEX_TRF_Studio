@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QUrl, pyqtSignal, QStandardPaths
 from PyQt6.QtQuickWidgets import QQuickWidget
+import matplotlib
 import numpy as np
 from pathlib import Path
 from plyer import notification
@@ -33,7 +34,7 @@ from ..core import (
     get_app_setting, set_app_setting,
     LOG_FILENAME, log_file_path, set_file_logging, set_log_file, clear_log_file,
     default_export_format, default_export_dir, default_skip_validation,
-    default_skip_epochs, figure_dpi, set_console_level, get_dialog_dir,
+    default_skip_epochs, figure_dpi, set_console_level, get_dialog_dir, datum_export_bare,
 )
 
 from ..io import create_parsers, parallel, library
@@ -330,7 +331,8 @@ class SINEXParserApp(QMainWindow):
                 link.write_text(f'#!/bin/bash\ncd "{PROGRAM_DIR}"\nexec bash "{target}"\n')
                 link.chmod(0o755)
             else:
-                icon = PROGRAM_DIR / 'sinex_parser' / 'ui' / 'icon.png'
+                icon = Path.home() / '.local' / 'share' / 'icons' / 'sinex-trf-studio.png'
+                icon.parent.mkdir(parents=True, exist_ok=True)
                 self.windowIcon().pixmap(256, 256).save(str(icon))
                 link = desktop / 'SINEX TRF Studio.desktop'
                 link.write_text("[Desktop Entry]\nType=Application\nName=SINEX TRF Studio\n"
@@ -411,12 +413,20 @@ class SINEXParserApp(QMainWindow):
         self._dpi_group = QActionGroup(self)
         self._dpi_group.setExclusive(True)
         current_dpi = figure_dpi()
+        matplotlib.rcParams['savefig.dpi'] = current_dpi
         for dpi in (100, 150, 200, 300):
             act = QAction(str(dpi), self, checkable=True)
             act.setChecked(dpi == current_dpi)
             act.triggered.connect(lambda _checked, d=dpi: self._set_figure_dpi(d))
             self._dpi_group.addAction(act)
             dpi_menu.addAction(act)
+
+        export_menu.addSeparator()
+        self._datum_bare_action = QAction('Export datum matrices without labels', self, checkable=True)
+        self._datum_bare_action.setChecked(datum_export_bare())
+        self._datum_bare_action.triggered.connect(
+            lambda checked: set_app_setting('export/datum_bare', bool(checked)))
+        export_menu.addAction(self._datum_bare_action)
 
         parse_menu = settings_menu.addMenu('Parsing')
         parse_menu.setToolTipsVisible(True)
@@ -598,11 +608,11 @@ class SINEXParserApp(QMainWindow):
 
     def _set_export_format(self, name: str):
         set_app_setting('export/format', name)
-        for widget in (self.operations_widget, self.datum_widget):
-            combo = getattr(widget, 'format_combo', None)
-            if combo is not None:
-                combo.setCurrentText(name)
+        combo = getattr(self.operations_widget, 'format_combo', None)
+        if combo is not None:
+            combo.setCurrentText(name)
         self.format_combo.setCurrentText(name)
+        self.datum_widget.format_combo.setCurrentText("NumPy (.npy, bare)" if name == "NumPy (.npy)" else name)
 
     def _refresh_export_dir_action(self):
         directory = default_export_dir()
@@ -624,6 +634,7 @@ class SINEXParserApp(QMainWindow):
 
     def _set_figure_dpi(self, dpi: int):
         set_app_setting('figures/dpi', int(dpi))
+        matplotlib.rcParams['savefig.dpi'] = int(dpi)
 
     def _toggle_parallel(self, checked: bool):
         parallel.ENABLED = bool(checked)
@@ -790,6 +801,9 @@ class SINEXParserApp(QMainWindow):
         self.start_parse(Path(source), entry=Path(folder))
 
     def start_parse(self, fpath, entry=None):
+        if not self.select_file_button.isEnabled():
+            QMessageBox.information(self, "Loading", "A file is still loading.")
+            return
         if self._file_loaded:
             logger.info("----- New File -----")
 
@@ -797,6 +811,7 @@ class SINEXParserApp(QMainWindow):
         if self.file_info_widget:  # Update new widget
             self.file_info_widget.clear_display()  # Clear previous info
 
+        self.select_file_button.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
         skip_epochs = default_skip_epochs()
@@ -853,6 +868,7 @@ class SINEXParserApp(QMainWindow):
         if worker is not self.worker or getattr(worker, "parse_generation", 0) != self._parse_generation:
             logger.info("Ignoring completion signal from a superseded parse worker.")
             return
+        self.select_file_button.setEnabled(True)
         if self.worker.result_data is None:
             QMessageBox.critical(self, "Error", "Parsing finished, but no data was returned from the worker.")
             self.progress_bar.setVisible(False)
@@ -904,6 +920,7 @@ class SINEXParserApp(QMainWindow):
             # for a past worker that reported an error leave the newer parse unaffected
             logger.info("Ignoring error from a superseded parse worker.")
             return
+        self.select_file_button.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.discard_loaded_file()
         if getattr(worker, "structure_error", False):

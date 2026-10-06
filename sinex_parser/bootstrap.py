@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -41,6 +42,14 @@ LINUX_PACKAGES = (
     "libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 "
     "libxkbcommon-x11-0"
 )
+SPLASH = r"""
+   _________  _______  __  _________  ____  ____________  _____  ________
+  / __/  _/ |/ / __/ |/_/ /_  __/ _ \/ __/ / __/_  __/ / / / _ \/  _/ __ \
+ _\ \_/ //    / _/_>  <    / / / , _/ _/  _\ \  / / / /_/ / // // // /_/ /
+/___/___/_/|_/___/_/|_|   /_/ /_/|_/_/   /___/ /_/  \____/____/___/\____/
+"""
+SPLASH_SECONDS = 3.0
+BAR_WIDTH = 24
 
 
 def ansi_codepage():
@@ -235,8 +244,9 @@ def create_environment_commands(uv, reinstall):
             command.append("--clear")
         commands.append(command + [str(VENV_DIR)])
     if uv:
+        action = ["install", "-r"] if uv[0] == str(python) else ["sync"]
         commands.append(
-            [*uv, "pip", "install", "-r", str(REQUIREMENTS), "--python", str(python)]
+            [*uv, "pip", *action, str(REQUIREMENTS), "--python", str(python)]
         )
     else:
         commands.append(
@@ -348,9 +358,37 @@ def plan(reinstall):
     return 0
 
 
+def show_splash():
+    from . import __version__
+    print(SPLASH)
+    print("SINEX TRF Studio " + __version__, flush=True)
+
+
+def starting_bar(seconds=SPLASH_SECONDS):
+    if not sys.stdout.isatty():
+        return
+    shades = "░▒▓█"
+    try:
+        shades.encode(sys.stdout.encoding or "ascii")
+    except (LookupError, UnicodeEncodeError):
+        shades = ".:=#"
+    pulse = shades + shades[3] + shades[2::-1]
+    span = BAR_WIDTH + len(pulse)
+    frames = max(1, int(seconds / 0.05))
+    for i in range(frames):
+        start = i % span - len(pulse)
+        bar = "".join(pulse[j - start] if 0 <= j - start < len(pulse) else " " for j in range(BAR_WIDTH))
+        sys.stdout.write("\rStarting  [" + bar + "]")
+        sys.stdout.flush()
+        time.sleep(seconds / frames)
+    sys.stdout.write("\rStarting  [" + shades[3] * BAR_WIDTH + "]\n")
+    sys.stdout.flush()
+
+
 def relaunch():
     env = os.environ.copy()
     env[MARKER] = "1"
+    show_splash()
     if os.name == "nt":
         python = venv_pythonw()
         if not python.is_file():
@@ -370,7 +408,15 @@ def relaunch():
         except OSError as error:
             print("The application could not start: " + str(error))
             return 1
+        starting_bar()
         return 0
+    if sys.stdout.isatty():
+        child = os.fork()
+        if child == 0:
+            if os.fork() == 0:
+                starting_bar()
+            os._exit(0)
+        os.waitpid(child, 0)
     try:
         os.execve(str(venv_python()), [str(venv_python()), str(MAIN)], env)
     except OSError as error:

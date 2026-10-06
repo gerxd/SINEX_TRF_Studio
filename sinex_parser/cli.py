@@ -81,14 +81,14 @@ def _formats(text):
     return formats
 
 
-def _write(matrix, out_dir, stem, prefix, tag, formats):
+def _write(matrix, out_dir, stem, prefix, tag, formats, kind=None):
     written = []
     if "xlsx" in formats and np.size(matrix) > export.XLSX_MAX_CELLS:
         raise CliError(export.XLSX_TOO_LARGE)
     for fmt in formats:
         extension = f".{fmt}"
         out_file = ensure_suffix(str(Path(out_dir) / f"{stem}_{prefix}{tag}{extension}"), extension)
-        export.write_datum_matrix(matrix, out_file, extension)
+        export.write_datum_matrix(matrix, out_file, extension, kind)
         written.append(out_file)
     return written
 
@@ -149,9 +149,9 @@ def cmd_datum(args):
     formats = _formats(args.formats)
 
     written = []
-    written += _write(result.sigma_theta, out_dir, stem, "sigma_theta", tag, formats)
-    written += _write(cross_corr, out_dir, stem, "cross_correlations", tag, formats)
-    written += _write(helmert, out_dir, stem, "helmert_parameters", tag, formats)
+    for prefix, matrix in (("sigma_theta", result.sigma_theta), ("cross_correlations", cross_corr),
+                           ("helmert_parameters", helmert)):
+        written += _write(matrix, out_dir, stem, prefix, tag, formats, None if args.bare else prefix)
     written += _write_report(args, data, sol, Cx, applied, excluded, details, result,
                              cross_corr, helmert, out_dir, stem, tag)
 
@@ -161,7 +161,7 @@ def cmd_datum(args):
         from .io import figures
         written += figures.save_datum_figures(
             out_dir, stem, tag, result.sigma_theta, cross_corr, helmert,
-            datum.filter_disp(applied, details))
+            datum.filter_disp(applied, details), args.dpi)
 
     if args.json:
         diag = np.diag(result.sigma_theta)
@@ -324,6 +324,9 @@ def build_parser():
                    help="velocity sigma threshold in metres per year")
     p.add_argument("--no-filter", action="store_true", help="use every episode")
     p.add_argument("--plots", action="store_true", help="also save figures as png")
+    p.add_argument("--dpi", type=int, default=150, help="resolution of the png figures")
+    p.add_argument("--bare", action="store_true",
+                   help="write the matrices without parameter names and units")
     p.add_argument("--json", action="store_true", help="print the summary as JSON")
     p.set_defaults(func=cmd_datum)
 

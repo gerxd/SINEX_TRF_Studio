@@ -91,13 +91,9 @@ class SiteIDParser(SinexBlockParser):
         return stations
 
     def dms_to_decimal(self, d_str, m_str, s_str, is_lat=False):
-        try:
-            deg = float(d_str)
-            mn = float(m_str)
-            sc = float(s_str)
-        except ValueError:
-            logger.warning(f"Failed to parse DMS: {d_str}, {m_str}, {s_str}")
-            return 0.0
+        deg = float(d_str)
+        mn = float(m_str)
+        sc = float(s_str)
         # conv to decimal
         decimal = abs(deg) + mn / 60.0 + sc / 3600.0
     #handle negative coordinates
@@ -191,6 +187,9 @@ class MatrixEstimateParser(SinexBlockParser):
             except ValueError:
                 vals = [float(v.replace('D', 'E').replace('d', 'e')) for v in tokens[2:]]
 
+        n = self._matrix.shape[0]
+        if row_idx < 0 or col_idx < 0 or row_idx >= n or col_idx + len(vals) > n:
+            raise ValueError(f"Matrix index out of range: {ln}")
         for i, val in enumerate(vals):
             cc = col_idx + i
             self._matrix[row_idx, cc] = val
@@ -243,6 +242,8 @@ class MatrixEstimateParser(SinexBlockParser):
 
             row_idx = rnum - 1
             col_idx = cnum - 1
+            if row_idx < 0 or col_idx < 0 or row_idx >= sz or col_idx + len(vals) > sz:
+                raise ValueError(f"Matrix index out of range: {ln}")
 
             for i, val in enumerate(vals):
                 # So here the program determines the actual column

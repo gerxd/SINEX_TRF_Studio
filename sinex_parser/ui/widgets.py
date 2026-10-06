@@ -38,7 +38,7 @@ from .. import __version__
 
 from ..core import (
     logger, benchmark, remember_dialog_dir, default_save_path, ensure_suffix,
-    default_export_format, default_pos_threshold, default_vel_threshold,
+    default_export_format, default_pos_threshold, default_vel_threshold, datum_export_bare,
 )
 from ..io import SinexBlockParser, MatrixEstimateParser
 from ..io import export, figures, reader, library
@@ -58,31 +58,46 @@ class StationsMapPage(QWebEnginePage):
 EPISODE_JS = """
 (function () {
 var map = __MAP__;
-var Ring = L.CircleMarker.extend({
-  _project: function () {
-    this._point = this._map.latLngToLayerPoint(this._latlng).add(this.options.offset);
-    this._updateBounds();
-  }
-});
 var groups = {kept: L.featureGroup(), filtered: L.featureGroup()};
+var all = [];
 var byCode = {};
 var selected = null;
 function look(m, on) {
-  var size = on ? 14 : 10;
-  m.options.offset = L.point(m.row.dx * size / 10, m.row.dy * size / 10);
   m.setStyle({radius: on ? 6 : 4.5, color: on ? "#111111" : "#ffffff", weight: on ? 2 : 1});
 }
+function order() {
+  var ms = byCode[selected] || [];
+  ms.forEach(function (m) { if (!m.row.filtered) { m.bringToFront(); } });
+  groups.filtered.eachLayer(function (m) { m.bringToFront(); });
+  ms.forEach(function (m) { if (m.row.filtered) { m.bringToFront(); } });
+}
+function popup(ms, latlng) {
+  map.openPopup(ms.map(function (m) { return m.row.popup; }).join("<hr>"), latlng,
+    {maxWidth: 320, maxHeight: 320});
+}
+function hit(e) {
+  var p = e.containerPoint;
+  var ms = all.filter(function (m) {
+    return map.hasLayer(m) &&
+      map.latLngToContainerPoint(m.getLatLng()).distanceTo(p) <= m.getRadius() + m.options.weight / 2;
+  });
+  popup(ms.length ? ms : [e.layer], e.layer.getLatLng());
+}
+groups.kept.on("click", hit);
+groups.filtered.on("click", hit);
 window.sinexData = function (rows) {
+  map.closePopup();
   groups.kept.clearLayers();
   groups.filtered.clearLayers();
+  all = [];
   byCode = {};
   rows.forEach(function (r) {
-    var m = new Ring([r.lat, r.lon], {offset: L.point(r.dx, r.dy), radius: 4.5, color: "#ffffff",
+    var m = L.circleMarker([r.lat, r.lon], {radius: 4.5, color: "#ffffff",
       weight: 1, opacity: 0.92, fillColor: r.color, fillOpacity: 0.92});
     m.row = r;
-    m.bindPopup(r.popup, {maxWidth: 320});
     m.bindTooltip(r.label, {sticky: true});
     groups[r.filtered ? "filtered" : "kept"].addLayer(m);
+    all.push(m);
     (byCode[r.code] = byCode[r.code] || []).push(m);
   });
   var code = selected;
@@ -90,18 +105,23 @@ window.sinexData = function (rows) {
   sinexSelect(code);
 };
 window.sinexShow = function (kept, filtered) {
-  if (kept) { groups.kept.addTo(map); } else { groups.kept.remove(); }
-  if (filtered) { groups.filtered.addTo(map); } else { groups.filtered.remove(); }
+  map.closePopup();
+  groups.kept.remove();
+  groups.filtered.remove();
+  if (kept) { groups.kept.addTo(map); }
+  if (filtered) { groups.filtered.addTo(map); }
+  order();
 };
 window.sinexSelect = function (code, lat, lon) {
   (byCode[selected] || []).forEach(function (m) { look(m, false); });
   selected = code;
   var ms = byCode[code] || [];
-  ms.forEach(function (m) { look(m, true); m.bringToFront(); });
+  ms.forEach(function (m) { look(m, true); });
+  order();
   if (lat === undefined || lat === null) { return; }
   map.setView([lat, lon], 6, {animate: false});
   var shown = ms.filter(function (m) { return map.hasLayer(m); });
-  if (shown.length) { shown[0].openPopup(map.layerPointToLatLng(shown[0]._point)); }
+  if (shown.length) { popup(shown, shown[0].getLatLng()); }
 };
 sinexData(__ROWS__);
 sinexShow(__KEPT__, __FILTERED__);
@@ -1178,6 +1198,11 @@ class StationsWidget(QWidget):
         )
         self._map_html_dir = temp_root / "sinex_studio_offline_folium_map"
         self._map_html_dir.mkdir(parents=True, exist_ok=True)
+        for old in self._map_html_dir.glob("stations_map_*.html"):
+            try:
+                old.unlink()
+            except OSError:
+                pass
 
         self._map_assets_dir = Path(__file__).resolve().parent / "map_assets"
         self._leaflet_js_path = self._map_assets_dir / "leaflet" / "leaflet.js"
@@ -1268,23 +1293,14 @@ class StationsWidget(QWidget):
         return visible
 
     def _marker_rows(self) -> List[dict]:
-        groups = {}
-        for ep in self.episodes:
-            groups.setdefault((round(ep["latitude"], 2), round(ep["longitude"], 2)), []).append(ep["label"])
         rows = []
         for ep in self.episodes:
             lat, lon = ep["latitude"], ep["longitude"]
-            members = groups[(round(lat, 2), round(lon, 2))]
-            dx = dy = 0.0
-            if len(members) > 1:
-                angle = 2 * np.pi * members.index(ep["label"]) / len(members) - np.pi / 2
-                ring = 10 * max(0.7, 0.18 * len(members))
-                dx, dy = ring * np.cos(angle), ring * np.sin(angle)
             is_filtered = self._episode_key(ep) in self.excluded
             first, *rest = self._episode_lines(ep)
             lines = [f"<b>{html.escape(first)}</b>"] + [html.escape(t) for t in rest]
             lines.append(f"Lat: {lat:.4f}<br>Lon: {lon:.4f}")
-            rows.append({"lat": lat, "lon": lon, "dx": float(dx), "dy": float(dy),
+            rows.append({"lat": lat, "lon": lon,
                          "code": ep["code"], "label": ep["label"], "filtered": is_filtered,
                          "color": "#c0392b" if is_filtered else "#2e8b57", "popup": "<br>".join(lines)})
         return rows
@@ -2144,8 +2160,9 @@ class DatumWidget(QWidget):
 
         export_line = QHBoxLayout()
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["Excel (.xlsx)", "CSV (.csv)", "Text (.txt)", "NumPy (.npy)"])
-        self.format_combo.setCurrentText(default_export_format())
+        self.format_combo.addItems(["Excel (.xlsx)", "CSV (.csv)", "Text (.txt)", "NumPy (.npy, bare)"])
+        fmt = default_export_format()
+        self.format_combo.setCurrentText("NumPy (.npy, bare)" if fmt == "NumPy (.npy)" else fmt)
         export_line.addWidget(QLabel("Export Format:"))
         export_line.addWidget(self.format_combo)
 
@@ -2295,6 +2312,8 @@ class DatumWidget(QWidget):
             self._manual_filter_enabled = manual_enabled
             self._manual_selected_episodes = selected_episodes
             self.set_filter_options(enabled, pos_m, vel_m)
+            if hasattr(self.window(), "remember_filter_thresholds"):
+                self.window().remember_filter_thresholds()
             self._update_filter_status()
             if manual_enabled:
                 self._append_status(f"[Filter] Manual selection enabled: {len(selected_episodes)} episodes selected")
@@ -2895,7 +2914,7 @@ class DatumWidget(QWidget):
             QMessageBox.warning(self, "Export Error", "Selected data not available")
             return
 
-        extension = export.FORMAT_EXTENSIONS.get(format_str, '.txt')
+        extension = export.FORMAT_EXTENSIONS.get(format_str.replace(", bare", ""), '.txt')
         parent_app = self.window()
         original_file = parent_app.current_data['metadata'].get('filename', '')
         filter_suffix = self._filter_tag() if self.is_filtered(selection) else ""
@@ -2909,7 +2928,7 @@ class DatumWidget(QWidget):
         remember_dialog_dir(out_file)
         out_file = ensure_suffix(out_file, extension)
         try:
-            export.write_datum_matrix(matrix, out_file, extension)
+            export.write_datum_matrix(matrix, out_file, extension, None if datum_export_bare() else prefix)
 
             self._append_status(f"exported {selection} to {out_file}")
 
@@ -3254,7 +3273,7 @@ class FilterOptionsDialog(QDialog):
             station_label = QLabel(f"<b>{station_code}</b>")
             self.checkboxes_layout.addWidget(station_label)
             
-            for episode in sorted(station_episodes[station_code]):
+            for episode in sorted(station_episodes[station_code], key=datum_math.episode_order):
                 code, pt, soln = episode
                 label = f"{code}.{pt}.{soln}"
                 

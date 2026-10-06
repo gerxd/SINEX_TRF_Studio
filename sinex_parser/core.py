@@ -334,7 +334,7 @@ def default_save_path(default_name: str) -> str:
     return default_name
 
 
-DEFAULT_EXPORT_FORMAT = 'NumPy (.npy)'
+DEFAULT_EXPORT_FORMAT = 'CSV (.csv)'
 
 
 def default_export_format():
@@ -343,6 +343,10 @@ def default_export_format():
 
 def default_export_dir():
     return str(get_app_setting('export/dir', '') or '')
+
+
+def datum_export_bare():
+    return get_app_setting('export/datum_bare', False) in (True, 'true')
 
 
 def figure_dpi():

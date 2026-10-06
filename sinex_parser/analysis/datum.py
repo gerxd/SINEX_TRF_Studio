@@ -95,13 +95,18 @@ def collect_indices(sol):
             have_vel.add(episode_key)
     return idx_map, coords, have_pos, have_vel
 
+def episode_order(episode):
+    code, pt, soln = episode
+    return code, pt, -1 if soln is None else soln
+
+
 def build_E(sol, include_vel=True, exclude_episodes=None):
     if exclude_episodes is None: exclude_episodes = set()
     idx_map, coords, have_pos, have_vel = collect_indices(sol)
     use_vel_cols = include_vel and len(have_vel - exclude_episodes) > 0
     k = 14 if use_vel_cols else 7
     rows, row_idx, used_episodes = [], [], 0
-    for episode in sorted(have_pos):
+    for episode in sorted(have_pos, key=episode_order):
         if episode in exclude_episodes: continue
         c = coords.get(episode)
         if not c or None in (c["x"], c["y"], c["z"]): continue
@@ -164,7 +169,7 @@ def detect_bad_episodes_cx(
     n_considered_vel = 0
     n_excl_vel = 0
 
-    for episode in sorted(have_pos):
+    for episode in sorted(have_pos, key=episode_order):
         code, pt, soln = episode
         try:
             # Retrieve matrix indices for X, Y, Z position components
@@ -394,7 +399,7 @@ def select_excluded_episodes(sol, Cx, applied):
             return float(np.sqrt(v))
 
         details = []
-        for ep in sorted(episodes_to_exclude):
+        for ep in sorted(episodes_to_exclude, key=episode_order):
             code, pt, soln = ep
             ix = idx_map.get((code, "STAX", pt, soln))
             iy = idx_map.get((code, "STAY", pt, soln))
@@ -462,7 +467,7 @@ def select_excluded_episodes(sol, Cx, applied):
             return float(np.sqrt(v))
 
         details = []
-        for ep in sorted(episodes_to_exclude):
+        for ep in sorted(episodes_to_exclude, key=episode_order):
             code, pt, soln = ep
             # sigma (from Cx)
             ix = idx_map.get((code, "STAX", pt, soln))

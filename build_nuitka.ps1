@@ -32,7 +32,7 @@ if ($Clean) {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $projectRoot "main.dist")
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $projectRoot "main.onefile-build")
     Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $projectRoot "main.exe")
-    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $projectRoot "SINEX Studio.exe")
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $projectRoot "SINEX TRF Studio.exe")
 }
 
 $initFile = Join-Path $projectRoot "sinex_parser\__init__.py"

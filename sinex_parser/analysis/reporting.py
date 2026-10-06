@@ -22,7 +22,7 @@ LITERATURE_NAMES = ["tx", "ty", "tz", "rx", "ry", "rz", "ds"]
 LITERATURE_ORDER = [0, 1, 2, 4, 5, 6, 3]
 CONVENTION = (
     "Rotations follow the IERS sign convention. The literature order is tx, ty, tz, rx, ry, "
-    "rz, ds, then the same rates, where rx, ry, rz are ex, ey, ez here. The paper control "
+    "rz, ds, then the same rates. The paper control "
     "comparison uses that order and the opposite rotation sign, which flips the sign of every "
     "correlation between a rotation and another parameter and leaves the sigmas unchanged."
 )
@@ -30,10 +30,10 @@ CONVENTION = (
 
 def helmert_names(size):
     if size == 7:
-        return ["tx", "ty", "tz", "ds", "ex", "ey", "ez"]
+        return ["tx", "ty", "tz", "ds", "rx", "ry", "rz"]
     if size == 14:
-        return ["tx", "ty", "tz", "ds", "ex", "ey", "ez",
-                "tx_v", "ty_v", "tz_v", "ds_v", "ex_v", "ey_v", "ez_v"]
+        return ["tx", "ty", "tz", "ds", "rx", "ry", "rz",
+                "tx_dot", "ty_dot", "tz_dot", "ds_dot", "rx_dot", "ry_dot", "rz_dot"]
     return [f"p{i + 1}" for i in range(size)]
 
 
@@ -218,7 +218,7 @@ def _literature_order(helmert):
     for position, i in enumerate(order):
         rate = position >= 7
         factor = 1e3 if i % 7 < 3 else MM_AT_SURFACE
-        rows.append({"name": LITERATURE_NAMES[position % 7] + ("_v" if rate else ""),
+        rows.append({"name": LITERATURE_NAMES[position % 7] + ("_dot" if rate else ""),
                      "unit": "mm/yr" if rate else "mm", "sigma": float(flat[i] * factor)})
     return rows
 
