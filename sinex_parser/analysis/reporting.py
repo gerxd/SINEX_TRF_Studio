@@ -5,7 +5,6 @@ import hashlib
 import json
 import math
 import platform
-import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -20,12 +19,6 @@ BLOCKS = (("translation", 0, 3), ("scale", 3, 4), ("rotation", 4, 7))
 CHUNK = 2048
 LITERATURE_NAMES = ["tx", "ty", "tz", "rx", "ry", "rz", "ds"]
 LITERATURE_ORDER = [0, 1, 2, 4, 5, 6, 3]
-CONVENTION = (
-    "Rotations follow the IERS sign convention. The literature order is tx, ty, tz, rx, ry, "
-    "rz, ds, then the same rates. The paper control "
-    "comparison uses that order and the opposite rotation sign, which flips the sign of every "
-    "correlation between a rotation and another parameter and leaves the sigmas unchanged."
-)
 
 
 def helmert_names(size):
@@ -325,11 +318,11 @@ def build_diagnostics(sol, Cx, applied, excluded, details, result, cross_corr, h
             "parameters": len(sol),
             "stations": len({e["code"] for e in episodes.values()}),
             "station_episodes": len(episodes),
+            "non_station_parameters": datum.non_station_counts(sol),
             "environment": _environment(),
             "reference_epochs": epochs,
             "filter": _filter_info(applied, details),
         },
-        "conventions": CONVENTION,
         "sigma_theta": {
             "names": names,
             "matrix": st.tolist(),
@@ -413,6 +406,7 @@ def render_text(report):
         f"data span {_g(src['data_start'])} to {_g(src['data_end'])}")
     add(f"  parameters: {prov['parameters']}, stations: {prov['stations']}, "
         f"station episodes: {prov['station_episodes']}")
+    add("  non-station parameters: " + (datum.non_station_text(prov["non_station_parameters"]) or "none"))
     add(f"  SINEX TRF Studio {env['application']}, Python {env['python']}, numpy {env['numpy']}, "
         f"BLAS {env['blas']}")
     add(f"  date: {env['date']}")
@@ -430,8 +424,6 @@ def render_text(report):
     else:
         add("  filter: none")
     add(f"  filter tag: {flt['tag'] or 'none'}")
-    add("")
-    add(textwrap.fill(report["conventions"], 90, initial_indent="  ", subsequent_indent="  "))
 
     st = report["sigma_theta"]
     names = st["names"]

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.2
+
+Journal Submission Release
+
+Changes:
+- Parser robustness improvements
+- Manual and example datasets upload
+
+Fixes:
+- Bug fixes
+
 ## 1.5.1
 
 Changes:

@@ -4,7 +4,7 @@ import time
 import numpy as np
 
 from ..core import (
-    logger, benchmark, align_apriori_info_matrix, inflate_or_trim_matrix,
+    logger, benchmark, apriori_info_subspace, inflate_or_trim_matrix,
 )
 
 
@@ -15,19 +15,23 @@ class NormalMatrixError(Exception):
 def build_normal_matrix(Cov_final, var_factor, apr_data, apr_key):
     Qx = Cov_final / var_factor
 
+    apriori_info = None
     if apr_data is not None:
         final_dim = Qx.shape[0]
         apriori_matrix = inflate_or_trim_matrix(apr_data, final_dim)
         logger.info(f"Apriori covariance block found in {apr_key}, dimension={apr_data.shape}.")
-        # N = inv(Qx) - inv(C0): remove apriori constraint in information space
         try:
-            Qinv = np.linalg.inv(Qx)
+            N = np.linalg.inv(Qx)
             del Qx
-            N = Qinv - align_apriori_info_matrix(apr_data, final_dim)
+            info, idx = apriori_info_subspace(apr_data, final_dim)
+            if idx.size:
+                P0_sub = info * var_factor
+                N[np.ix_(idx, idx)] -= P0_sub
+                apriori_info = (P0_sub, idx)
         except np.linalg.LinAlgError:
-            logger.warning("Inversion failed during N = inv(Qx) - inv(C0) => Normal matrix not set.")
-            raise NormalMatrixError("Inversion failed during N = inv(Qx) - inv(C0).")
-        logger.info("Normal matrix computed as N = inv(Qx) - inv(C0).")
+            logger.warning("Inversion failed during N = inv(Qx) - inv(Q0), Q0 = C0/var_factor => Normal matrix not set.")
+            raise NormalMatrixError("Inversion failed during N = inv(Qx) - inv(Q0), Q0 = C0/var_factor.")
+        logger.info("Normal matrix computed as N = inv(Qx) - inv(Q0), Q0 = C0/var_factor.")
     else:
         apriori_matrix = None
         logger.info("No apriori covariance block found.")
@@ -38,7 +42,7 @@ def build_normal_matrix(Cov_final, var_factor, apr_data, apr_key):
             raise NormalMatrixError("Inversion of Qx failed.")
         logger.info("Normal matrix computed as N = inv(Qx).")
 
-    return N, apriori_matrix
+    return N, apriori_matrix, apriori_info
 
 
 def build_dx(est_data, apr_data):
@@ -68,12 +72,22 @@ def build_dx(est_data, apr_data):
     return dx
 
 
-def compute_u(N, est_data, apr_data):
-    u_bench = benchmark.begin('compute u = N*dx')
+def compute_u(N, est_data, apr_data, P0=None):
+    u_bench = benchmark.begin('compute u = inv(Qx)*dx')
     dx = build_dx(est_data, apr_data)
     u = N @ dx
+    if P0 is not None:
+        P0_sub, idx = P0
+        u[idx] += P0_sub @ dx[idx]
     benchmark.end(u_bench)
     return u, dx
+
+
+def apriori_order_matches(est_data, apr_est):
+    def keys(rows):
+        ordered = sorted(rows, key=lambda p: p.get("index", 0))
+        return [(p.get("code"), p.get("type"), p.get("pt"), p.get("soln")) for p in ordered]
+    return all(e == a for e, a in zip(keys(est_data), keys(apr_est)))
 
 
 def rank_of_normal_matrix(N):
@@ -86,7 +100,7 @@ def rank_of_normal_matrix(N):
     return rank_n, elapsed
 
 
-def recomputation_check(N, u, dx):
+def recomputation_check(N, u, dx, P0=None):
     if N is None:
         return ["Error: Normal Matrix (N) not computed yet."]
     if u is None:
@@ -98,12 +112,21 @@ def recomputation_check(N, u, dx):
     u_computed = u
     dx_original = dx
 
-    # Verification: dx' = N^-1 * u  (since u = N * dx must never give dx)
+    # Verification: dx' = inv(N + P0) * u, with u = inv(Qx) * dx and inv(Qx) = N + P0
+    block = None
+    if P0 is not None:
+        P0_sub, idx = P0
+        block = np.ix_(idx, idx)
+        saved = N[block]
+        N[block] += P0_sub
     try:
         N_inv = np.linalg.inv(N)
     except np.linalg.LinAlgError:
         lines.append("Error: Cannot invert N for verification.")
         return lines
+    finally:
+        if block is not None:
+            N[block] = saved
 
     dx_recomputed = N_inv @ u_computed
     difference_vector = dx_original - dx_recomputed

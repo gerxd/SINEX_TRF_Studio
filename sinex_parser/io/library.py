@@ -13,7 +13,7 @@ import numpy as np
 
 from .. import __version__
 from ..core import logger
-from . import reader
+from . import checks, reader
 from .parsers import MatrixEstimateParser
 from .raw_export import file_sha256
 
@@ -161,7 +161,7 @@ def _locate(root, path):
     return root / digest
 
 
-def _reuse(folder, path, options):
+def _reuse(folder, path, options, parsers):
     start = time.time()
     if not (folder / ENTRY).is_file():
         if folder.exists():
@@ -181,6 +181,7 @@ def _reuse(folder, path, options):
         return None
     touch(folder, path)
     log_loaded(data, path.name, folder, time.time() - start)
+    checks.inspect(data, parsers)
     return data
 
 
@@ -242,7 +243,7 @@ def load(path, parsers, root=None, keep=False, status=None, **options):
             root = Path(root)
             root.mkdir(parents=True, exist_ok=True)
             folder = _locate(root, path)
-            data = _reuse(folder, path, stored)
+            data = _reuse(folder, path, stored, parsers)
             if data is not None:
                 if status is not None:
                     status["reused"] = True

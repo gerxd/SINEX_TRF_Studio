@@ -6,6 +6,22 @@ import numpy as np
 from ..core import logger
 
 
+STATION_TYPES = ("STAX", "STAY", "STAZ", "VELX", "VELY", "VELZ")
+
+
+def non_station_counts(sol):
+    counts = {}
+    for p in sol or []:
+        ptype = p.get("type")
+        if ptype not in STATION_TYPES:
+            counts[ptype] = counts.get(ptype, 0) + 1
+    return counts
+
+
+def non_station_text(counts):
+    return ", ".join(f"{t}:{c}" for t, c in counts.items())
+
+
 def parse_station_coordinates(solution_estimate_data):
 
     #take all station episodes (code, pt, soln) with complete STAX/STAY/STAZ
@@ -367,6 +383,9 @@ class SigmaThetaResult(NamedTuple):
 
 
 def select_excluded_episodes(sol, Cx, applied):
+    k = sum(non_station_counts(sol).values())
+    if k:
+        logger.info(f"{k} non-station parameters are not used in the Helmert design")
     # Check if manual filtering is enabled
     if applied.manual_enabled:
         # Manual mode: invert selection (selected = keep, all others = exclude)

@@ -21,7 +21,7 @@ uv run main.py
 On the first start, `main.py` checks the environment, records it in `.venv/.deps_stamp` and
 prints `The environment is ready.` Later starts skip the check until `requirements.txt` changes.
 
-A public example dataset is provided at `examples/BKG08457.SNX`.
+Example datasets are provided in `examples/`: `CRI23527.SNX` and `COE08827.SNX`.
 
 ## Core Capabilities
 
@@ -47,7 +47,7 @@ beside the window so it keeps responding. Results are identical to earlier versi
 1. Launch the application and click **Select SINEX File**.
 2. Open a `.snx` or `.snx.gz` file, or pick a file loaded before from **Library**. 
 3. Wait for parsing to finish. The header panel will show the detected active variance factor, the number of stations found, and whether an apriori covariance block is available.
-4. If the variance factor is missing, use **Edit** next to **Variance Factor** to compute the normal matrix. The bundled example `examples/BKG08457.SNX` requires this.
+4. If the variance factor is missing, use **Edit** next to **Variance Factor** to compute the normal matrix.
 
 ### Typical workflow
 

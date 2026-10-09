@@ -110,6 +110,7 @@ def cmd_parse(args):
         if sol:
             summary["parameters"] = len(sol)
             summary["station_episodes"] = len(datum.parse_station_coordinates(sol))
+        summary["non_station_parameters"] = datum.non_station_counts(sol)
         _print_json(summary)
         return 0
     print(f"file: {data['metadata']['filename']}")
@@ -172,6 +173,7 @@ def cmd_datum(args):
             "episodes_excluded": len(details),
             "episodes_used": result.n_episodes,
             "negative_sigma_theta_diagonal": int(np.count_nonzero(diag < 0.0)),
+            "non_station_parameters": datum.non_station_counts(sol),
             "helmert": {name: _num(v) for name, v in
                         zip(reporting.helmert_names(helmert.size), helmert.ravel())},
             "written": [str(name) for name in written],
@@ -220,6 +222,7 @@ def cmd_report(args):
             "filtered": datum.is_filtered(applied, details),
             "episodes_excluded": len(details),
             "episodes_used": result.n_episodes,
+            "non_station_parameters": datum.non_station_counts(sol),
             "written": written,
         })
         return 0
@@ -233,6 +236,10 @@ def cmd_report(args):
 def cmd_normal(args):
     data = _load(args.file)
     blocks = data["blocks"]
+    k = sum(datum.non_station_counts(blocks.get("SOLUTION/ESTIMATE")).values())
+    if k:
+        raise CliError("Normal matrix products need station parameters only. "
+                       f"This file has {k} non-station parameters.")
     Cx = _require_cova(blocks)
 
     var_factor = args.variance_factor
@@ -241,16 +248,19 @@ def cmd_normal(args):
     if var_factor is None:
         raise CliError(
             "this file has no SOLUTION/STATISTICS block, so there is no variance "
-            "factor to read. Pass --variance-factor explicitly."
+            "factor to read. Enter it with --variance-factor."
         )
 
     apr_key, apr_data = _first_block(blocks, APRIORI_KEYS)
     if apr_key is None:
         apr_key = APRIORI_KEYS[0]
-    N, apriori = normal.build_normal_matrix(Cx, var_factor, apr_data, apr_key)
-
     est_data = _require_estimate(blocks)
     apr_est = blocks.get("SOLUTION/APRIORI")
+    if apr_data is not None and apr_est and not normal.apriori_order_matches(est_data, apr_est):
+        raise CliError("SOLUTION/APRIORI and SOLUTION/ESTIMATE list the parameters in different "
+                       "orders. The apriori constraints cannot be placed.")
+    N, apriori, apriori_info = normal.build_normal_matrix(Cx, var_factor, apr_data, apr_key)
+
     u = dx = None
     if not apr_est:
         if not args.json:
@@ -259,7 +269,7 @@ def cmd_normal(args):
         raise CliError("dimension mismatch between the normal matrix and the parameter count")
     else:
         u, dx = normal.compute_u(
-            N, datum.index_ordered(est_data, N.shape[0], normal.NormalMatrixError), apr_est)
+            N, datum.index_ordered(est_data, N.shape[0], normal.NormalMatrixError), apr_est, apriori_info)
 
     stem = Path(data["metadata"]["filename"]).stem
     out_dir = Path(args.out)
@@ -272,7 +282,7 @@ def cmd_normal(args):
     if apriori is not None:
         written += _write(apriori, out_dir, stem, "Covariance_Apriori_Matrix", "", formats)
 
-    check = normal.recomputation_check(N, u, dx) if u is not None else None
+    check = normal.recomputation_check(N, u, dx, apriori_info) if u is not None else None
     rank_n = elapsed = None
     if args.rank:
         rank_n, elapsed = normal.rank_of_normal_matrix(N)

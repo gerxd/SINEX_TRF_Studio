@@ -254,12 +254,28 @@ def sigma_ranks(data):
     return ranks
 
 
-def preview(data, rows=50, cols=8):
+FULL_PREVIEW_CELLS = 250_000
+
+
+def value_ranks(values):
+    values = np.abs(np.asarray(values, dtype=float))
+    ranks = np.full(values.shape, np.nan)
+    mask = np.isfinite(values) & (values > 0)
+    if mask.any():
+        ordered = np.sort(values[mask])
+        ranks[mask] = np.searchsorted(ordered, values[mask], side='right') / ordered.size
+    return ranks
+
+
+def preview(data, rows=50, cols=8, full=False):
     kind = block_kind(data)
     if kind == 'matrix':
+        if full:
+            rows, cols = data.shape
         r, c = min(rows, data.shape[0]), min(cols, data.shape[1])
         cells = [[_cell(v) for v in line] for line in data[:r, :c].tolist()]
-        caption = f"{data.shape[0]} x {data.shape[1]} matrix, top left {r} x {c} shown"
+        caption = (f"{data.shape[0]} x {data.shape[1]} matrix" if (r, c) == data.shape
+                   else f"{data.shape[0]} x {data.shape[1]} matrix, top left {r} x {c} shown")
         return [str(j + 1) for j in range(c)], [str(i + 1) for i in range(r)], cells, caption
     if kind == 'table':
         headers = list(data[0]) if data else []

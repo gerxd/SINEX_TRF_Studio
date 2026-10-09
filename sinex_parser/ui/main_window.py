@@ -262,7 +262,13 @@ class SINEXParserApp(QMainWindow):
         make_section_header("Preview", preview_layout)
         self.preview_label = QLabel("No file loaded")
         self.preview_label.setWordWrap(True)
-        preview_layout.addWidget(self.preview_label)
+        preview_header = QHBoxLayout()
+        preview_header.addWidget(self.preview_label, 1)
+        self.full_preview_button = QPushButton("Load full preview")
+        self.full_preview_button.setVisible(False)
+        self.full_preview_button.clicked.connect(lambda: self.update_block_display(full=True))
+        preview_header.addWidget(self.full_preview_button)
+        preview_layout.addLayout(preview_header)
         self.preview_table = QTableWidget()
         self.preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.preview_table.setStyle(self._table_style)
@@ -1076,17 +1082,25 @@ class SINEXParserApp(QMainWindow):
                    f"about {raw_export.format_size(total)}")
         self.export_button.setEnabled(bool(keys))
 
-    def update_block_display(self):
+    def update_block_display(self, full=False):
         row = self.block_table.currentRow()
         blocks = self._raw_blocks()
         self.preview_table.clear()
+        self.full_preview_button.setVisible(False)
         if row < 0 or not blocks:
             self.preview_table.setRowCount(0)
             self.preview_table.setColumnCount(0)
             self.preview_label.setText("No block selected" if self.current_data else "No file loaded")
             return
         key = self.block_table.item(row, 0).text()
-        headers, labels, cells, caption = raw_export.preview(blocks[key])
+        data = blocks[key]
+        headers, labels, cells, caption = raw_export.preview(data, full=full)
+        if raw_export.block_kind(data) == 'matrix' and len(cells) * len(headers) < data.size:
+            fits = data.size <= raw_export.FULL_PREVIEW_CELLS
+            self.full_preview_button.setVisible(True)
+            self.full_preview_button.setEnabled(fits)
+            self.full_preview_button.setToolTip(
+                "" if fits else f"Too large for the preview, more than {raw_export.FULL_PREVIEW_CELLS} cells")
         self.preview_table.setUpdatesEnabled(False)
         self.preview_table.setRowCount(len(cells))
         self.preview_table.setColumnCount(len(headers))
@@ -1095,7 +1109,15 @@ class SINEXParserApp(QMainWindow):
         for i, line in enumerate(cells):
             for j, text in enumerate(line):
                 self.preview_table.setItem(i, j, QTableWidgetItem(text))
-        ranks = raw_export.sigma_ranks(blocks[key])
+        if raw_export.block_kind(data) == 'matrix' and cells:
+            shown = data[:len(cells), :len(headers)]
+            base = QtGui.QColor(tone_color("warn", self.preview_table))
+            for (i, j), rank in np.ndenumerate(raw_export.value_ranks(shown)):
+                if np.isfinite(rank):
+                    shade = QtGui.QColor(base)
+                    shade.setAlpha(int(40 + 160 * rank ** 2))
+                    self.preview_table.item(i, j).setBackground(shade)
+        ranks = raw_export.sigma_ranks(data)
         if ranks is not None:
             col = headers.index('sigma')
             base = QtGui.QColor(tone_color("warn", self.preview_table))

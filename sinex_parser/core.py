@@ -431,17 +431,15 @@ def inflate_or_trim_matrix(src: np.ndarray, target_dim: int) -> np.ndarray:
     return new_mat
 
 
-def align_apriori_info_matrix(src: np.ndarray, target_dim: int) -> np.ndarray:
+def apriori_info_subspace(src: np.ndarray, target_dim: int) -> tuple[np.ndarray, np.ndarray]:
     curr_dim = src.shape[0]
     active_subspace, active_global = _extract_active_apriori_subspace(src, target_dim)
-    new_mat = np.zeros((target_dim, target_dim), dtype=float)
 
     if active_subspace.size == 0:
         logger.info("Apriori covariance contained no active entries; apriori information contribution is zero.")
-        return new_mat
+        return np.zeros((0, 0), dtype=float), active_global
 
     info = np.linalg.inv(active_subspace)
-    new_mat[np.ix_(active_global, active_global)] = info
 
     if active_subspace.shape[0] != min(curr_dim, target_dim):
         logger.info(
@@ -459,4 +457,12 @@ def align_apriori_info_matrix(src: np.ndarray, target_dim: int) -> np.ndarray:
         logger.info(
             f"Apriori covariance bigger ({curr_dim}x{curr_dim}); slicing to {target_dim} before inversion."
         )
+    return info, active_global
+
+
+def align_apriori_info_matrix(src: np.ndarray, target_dim: int) -> np.ndarray:
+    info, active_global = apriori_info_subspace(src, target_dim)
+    new_mat = np.zeros((target_dim, target_dim), dtype=float)
+    if active_global.size:
+        new_mat[np.ix_(active_global, active_global)] = info
     return new_mat

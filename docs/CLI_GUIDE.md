@@ -59,19 +59,21 @@ not show. The command line does not write `sinex_parser.log`.
 `parse` reads a file and lists its blocks. It writes no files.
 
 ```bash
-.venv/Scripts/python.exe -m sinex_parser.cli parse examples/BKG08457.SNX
+.venv/Scripts/python.exe -m sinex_parser.cli parse examples/CRI23527.SNX
 ```
 
 ```
-file: BKG08457.SNX
-blocks: 5
-  SITE/ID: 13 entries
-  SOLUTION/ESTIMATE: 39 entries
-  SOLUTION/APRIORI: 39 entries
-  SOLUTION/MATRIX_ESTIMATE L COVA: array 39x39 float64
-  SOLUTION/MATRIX_APRIORI L COVA: array 39x39 float64
-parameters: 39
-station episodes with complete xyz: 13
+file: CRI23527.SNX
+blocks: 7
+  SOLUTION/STATISTICS: 0.596846752908865
+  SITE/ID: 87 entries
+  SOLUTION/EPOCHS: 87 entries
+  SOLUTION/ESTIMATE: 261 entries
+  SOLUTION/APRIORI: 261 entries
+  SOLUTION/MATRIX_ESTIMATE L COVA: array 261x261 float64
+  SOLUTION/MATRIX_APRIORI L COVA: array 261x261 float64
+parameters: 261
+station episodes with complete xyz: 87
 ```
 
 A list block shows its number of entries. A matrix block shows its shape and data type. Other
@@ -83,6 +85,33 @@ blocks show their value. The last two lines show:
 
 Use `parse` first on a new file. The output shows if the file has a covariance block, an
 apriori block and a `SOLUTION/STATISTICS` block. These blocks decide which commands can run.
+
+### Load checks
+
+Every command reads the file the same way and logs these messages:
+
+- `WARNING <k> non-station parameters (<TYPE:count, ...>). Datum products use the station
+  parameters only. Normal matrix products are not available.` Station parameters are `STAX`, `STAY`, `STAZ`, `VELX`, `VELY` and `VELZ`. Every
+  other type, such as `RS_RA`, `XPO` or `UT1`, is a non-station parameter.
+- `WARNING FILE/COMMENT line <n> starts with a block marker. Read as comment text.` Inside
+  `FILE/COMMENT`, only a line that starts with `-FILE/COMMENT` closes the block.
+- `WARNING <block> is not read by this version.` The file has a
+  `SOLUTION/MATRIX_ESTIMATE` or `SOLUTION/MATRIX_APRIORI` block of a type other than `COVA`,
+  or a `SOLUTION/NORMAL_EQUATION_MATRIX` or `SOLUTION/NORMAL_EQUATION_VECTOR` block, next to
+  a `COVA` estimate block. The command does not convert these blocks.
+- `WARNING Variance factor <s> matches the header RMS of unit weight <x>. It may be sigma0, not
+  sigma0^2. If so, enter sigma0^2 as a custom variance factor.` The header or `FILE/COMMENT`
+  has a value after `RMS OF UNIT WEIGHT` or `SIGMA0` that is within 5% of the variance
+  factor, and that value is not close to 1.
+- `INFO Blocks not read: <blocks>`, with `-v`.
+
+If the file has one of the unsupported matrix blocks and no `SOLUTION/MATRIX_ESTIMATE` `COVA`
+block, the load stops with exit code 2:
+
+```
+error: No covariance block. Found <blocks>, which this version does not read. Covariance and
+datum products are not available.
+```
 
 ## datum
 
@@ -188,7 +217,7 @@ first. To keep both, use a different `--out` folder for each run.
 
 ```
 episodes excluded: 0
-episodes used: 13
+episodes used: 87
 sigma theta: 7x7
 wrote <path>
 ...
@@ -235,6 +264,7 @@ file are bit identical to the `.npy` files from `datum`. Values that are not fin
   - The file name, size and SHA-256.
   - The agency and data span from the `%=SNX` header line.
   - The number of parameters, stations and station episodes.
+  - The non-station parameters by type, or `none`.
   - The application, Python, NumPy and BLAS versions.
   - The date with its UTC offset.
   - The reference epochs of the positions, with a warning if they are not all the same.
@@ -254,7 +284,7 @@ file are bit identical to the `.npy` files from `datum`. Values that are not fin
     the surface, with the equatorial radius 6378137 m. Rates per year.
   - The same sigmas with no episode excluded, and the ratio of the two.
   - A table in the literature order tx, ty, tz, rx, ry, rz, ds and the rates, in mm and mm/yr.
-    Use it to compare with a published table. Rotations use the IERS sign convention.
+    Use it to compare with a published table.
 - Network geometry:
   - The episodes, stations and stations with velocities in the calculation.
   - Each excluded episode, with the reason and the sigma that caused it.
@@ -284,10 +314,28 @@ recomputation check.
 | `--rank` | off | also calculate rank(N) by SVD |
 | `--json` | off | print a JSON summary |
 
-The file must have a covariance block and a `SOLUTION/ESTIMATE` block. The command inverts the
-covariance matrix and scales it by the variance factor to get N. Without a
+The file must have a covariance block and a `SOLUTION/ESTIMATE` block. The command calculates
+
+```
+N = inv(Qx) - inv(Q0),   Qx = Cx / s,   Q0 = C0 / s
+u = inv(Qx) dx,          dx = estimate - apriori value
+```
+
+where Cx is the estimate covariance, C0 the apriori covariance (`SOLUTION/MATRIX_APRIORI`) and s
+the variance factor. Without an apriori covariance block, N = inv(Qx). Without a
 `SOLUTION/APRIORI` block, the command does not calculate u and does not do the recomputation
-check.
+check. If `SOLUTION/APRIORI` and `SOLUTION/ESTIMATE` list the parameters in different orders, the
+command stops with exit code 2, because the apriori constraints cannot be placed.
+
+The command refuses a file with non-station parameters, with exit code 2:
+
+```
+error: Normal matrix products need station parameters only. This file has <k> non-station
+parameters.
+```
+
+The window refuses the same files. The datum commands still run on them and use the station
+parameters only.
 
 ### Variance factor
 
@@ -296,11 +344,11 @@ have this block. In this case, the command stops with this error:
 
 ```
 error: this file has no SOLUTION/STATISTICS block, so there is no variance factor
-to read. Pass --variance-factor explicitly.
+to read. Enter it with --variance-factor.
 ```
 
-To continue, give the factor, for example `--variance-factor 1.0`. The factor scales N,
-and u and dx change with it. If the file has a `SOLUTION/STATISTICS` block,
+To continue, give the factor, for example `--variance-factor 1.0`. The factor scales Qx and
+Q0, so N and u change with it. dx does not. If the file has a `SOLUTION/STATISTICS` block,
 `--variance-factor` replaces its value.
 
 The window uses the same rule. It asks for the factor in a dialog.
@@ -312,11 +360,11 @@ result with the original dx:
 
 ```
 ------ Performing Recomputation Check ------
-Original dx norm: 7.753603e-02
-Recomputed dx norm: 7.753603e-02
-Difference Norm (L2): 7.696986e-14
-Max Absolute Difference: 4.085621e-14
-Relative Error: 9.926979e-13 (or 0.0000%)
+Original dx norm: 1.526485e-01
+Recomputed dx norm: 1.526485e-01
+Difference Norm (L2): 2.333593e-14
+Max Absolute Difference: 1.217429e-14
+Relative Error: 1.528737e-13 (or 0.0000%)
 PASS: relative_error <= 1e-6
 ```
 
@@ -327,10 +375,10 @@ covariance block that is rank deficient or badly conditioned.
 
 `--rank` is off by default. `np.linalg.matrix_rank` does a full singular value decomposition,
 which is O(n^3). For large ITRF files, it takes much more time than all other steps. For
-n = 25000, the estimate is approximately 29 minutes. For n = 39, it is immediate:
+n = 25000, the estimate is approximately 29 minutes. For n = 261, it is immediate:
 
 ```
-rank(N) = 39 of 39, deficiency 0, 0.000 s
+rank(N) = 261 of 261, deficiency 0, 0.005 s
 ```
 
 Use `--rank` when you need the rank deficiency, for example to confirm the expected
@@ -372,7 +420,7 @@ because the format contains a creation time. Compare spreadsheets by cell value.
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 2 | usage error, missing file, file that cannot be read, missing required block, or missing variance factor |
+| 2 | usage error, missing file, file that cannot be read, missing required block, missing variance factor, unsupported matrix block without a covariance block, `normal` on a file with non-station parameters, or apriori and estimate blocks in different orders |
 | 3 | the calculation failed, with a `DatumError` or a `NormalMatrixError` |
 
 Errors go to stderr, with the prefix `error:`. Code 3 shows a mathematical failure on the file,
@@ -382,16 +430,18 @@ not an error in the command.
 
 All four commands accept `--json`. The command then prints one JSON object to stdout in place
 of the usual lines. It writes the same files. Values that are not finite are `null`.
+`non_station_parameters` maps each non-station parameter type to its count, and is `{}` when
+the file has none.
 
 | Command | Keys |
 |---|---|
-| `parse` | `command`, `version`, `file`, `blocks` (shape and dtype, number of entries, or value), `parameters`, `station_episodes` |
-| `datum` | `command`, `version`, `file`, `filtered`, `episodes_excluded`, `episodes_used`, `negative_sigma_theta_diagonal`, `helmert` (by name, `tx` to `rz_dot`), `written` |
-| `report` | `command`, `version`, `file`, `filtered`, `episodes_excluded`, `episodes_used`, `written` |
+| `parse` | `command`, `version`, `file`, `blocks` (shape and dtype, number of entries, or value), `parameters`, `station_episodes`, `non_station_parameters` |
+| `datum` | `command`, `version`, `file`, `filtered`, `episodes_excluded`, `episodes_used`, `negative_sigma_theta_diagonal`, `non_station_parameters`, `helmert` (by name, `tx` to `rz_dot`), `written` |
+| `report` | `command`, `version`, `file`, `filtered`, `episodes_excluded`, `episodes_used`, `non_station_parameters`, `written` |
 | `normal` | `command`, `version`, `file`, `variance_factor`, `n`, `recomputation_check` (the lines), `written`, and with `--rank` also `rank` and `rank_deficiency` |
 
 ```bash
-.venv/Scripts/python.exe -m sinex_parser.cli datum examples/BKG08457.SNX --out out --json
+.venv/Scripts/python.exe -m sinex_parser.cli datum examples/CRI23527.SNX --out out --json
 ```
 
 ## Examples

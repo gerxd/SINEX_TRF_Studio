@@ -6,7 +6,7 @@ from typing import Dict
 
 from ..core import logger, benchmark
 from .parsers import SinexBlockParser, MatrixEstimateParser, DiscontinuityParser
-from . import parallel
+from . import checks, parallel
 
 
 class SinexStructureError(ValueError):
@@ -58,6 +58,8 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
     open_blocks = []
     executor = None
     streamed = 0
+    seen = []
+    comment = []
 
     try:
         with open(filename, 'rb') as file:
@@ -70,11 +72,15 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
 
                 if ln[0].startswith('*'):
                     sinex_data['header'].append(ln)
+                elif cur_block == 'FILE/COMMENT' and ln[0] in '+-' and not ln.startswith('-FILE/COMMENT'):
+                    logger.warning(f"FILE/COMMENT line {total_lines} starts with a block marker. Read as comment text.")
+                    comment.append(ln)
                 elif ln.startswith('+'):
                     cur_block = ln[1:].strip()
                     cur_block_data = []
                     streaming_parser = None
                     open_blocks.append(cur_block)
+                    seen.append(cur_block)
 
                     if cur_block in ['SOLUTION/EPOCHS']:
                         if skip_epochs_block: 
@@ -154,6 +160,8 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
                     cur_block_data = []
                     skipping_epoch = False
                 elif cur_block:
+                    if cur_block == 'FILE/COMMENT':
+                        comment.append(ln)
                     if not skipping_epoch:
                         if streaming_parser is not None:
                         #stream into numpy array
@@ -168,6 +176,9 @@ def parse_sinex_file(filename, block_parsers, skip_epochs_block=False,
         est = sinex_data['blocks'].get('SOLUTION/ESTIMATE')
         if est and any(p.get('index') != i for i, p in enumerate(est, 1)):
             logger.warning("SOLUTION/ESTIMATE is not in INDEX order 1 to n. The datum and normal computations sort it by INDEX, or refuse it if INDEX is not a permutation of 1 to n.")
+        sinex_data['metadata']['blocks_seen'] = seen
+        sinex_data['metadata']['header_rms'] = checks.header_rms(sinex_data['header'] + comment)
+        checks.inspect(sinex_data, block_parsers)
         logger.info(f"Finished parse of {name} in {time.time()-start_time:.3f}s.")
         logger.info(f"Total lines read: {total_lines}, blocks: {len(sinex_data['blocks'])}.")
         benchmark.end(parse_token)

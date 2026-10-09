@@ -1523,6 +1523,7 @@ class OperationsWidget(QWidget):
 
         self._normal_matrix = None
         self._apriori_matrix = None
+        self._apriori_info = None
         self._u_vector = None
         self._dx_vector = None
         self._generation = 0
@@ -1616,6 +1617,7 @@ class OperationsWidget(QWidget):
         self._generation += 1
         self._normal_matrix = None
         self._apriori_matrix = None
+        self._apriori_info = None
         self._u_vector = None
         self._dx_vector = None
         self.rank_btn.setEnabled(False)
@@ -1645,7 +1647,17 @@ class OperationsWidget(QWidget):
     _RANK_WARN_DIM = 3000
     _RANK_SECONDS_AT_2500 = 1.73
 
+    def _refuse_non_station(self):
+        blocks = (getattr(self.window(), "current_data", None) or {}).get("blocks", {})
+        k = sum(datum_math.non_station_counts(blocks.get("SOLUTION/ESTIMATE")).values())
+        if k:
+            QMessageBox.critical(self, "Error", "Normal matrix products need station parameters only. "
+                                 f"This file has {k} non-station parameters.")
+        return bool(k)
+
     def compute_rank(self):
+        if self._refuse_non_station():
+            return
         if self._normal_matrix is None:
             QMessageBox.warning(self, "Warning", "Compute Normal matrix first.")
             return
@@ -1675,6 +1687,8 @@ class OperationsWidget(QWidget):
         )
 
     def compute_normal_matrix(self):
+        if self._refuse_non_station():
+            return
         t0 = time.time()
         parent_app = self.window()
         # reconstructed final cova
@@ -1685,7 +1699,7 @@ class OperationsWidget(QWidget):
             return
         var_factor = parent_app.get_variance_factor()
         if var_factor is None:
-            QMessageBox.critical(self, "Error", "No variance factor found.")
+            QMessageBox.critical(self, "Error", "No variance factor found. Enter it with Edit.")
             return
 
         normal_bench = benchmark.begin('compute normal matrix N')
@@ -1697,6 +1711,13 @@ class OperationsWidget(QWidget):
             apr_key = "SOLUTION/MATRIX_APRIORI U COVA"
             apr_data = parent_app.current_data['blocks'].get(apr_key)
 
+        apr_est = parent_app.current_data['blocks'].get('SOLUTION/APRIORI')
+        est_rows = parent_app.current_data['blocks'].get('SOLUTION/ESTIMATE')
+        if apr_data is not None and apr_est and est_rows and not normal_math.apriori_order_matches(est_rows, apr_est):
+            benchmark.cancel(normal_bench)
+            QMessageBox.critical(self, "Error", "SOLUTION/APRIORI and SOLUTION/ESTIMATE list the parameters in "
+                                 "different orders. The apriori constraints cannot be placed.")
+            return
         self._start(normal_math.build_normal_matrix, (Cov_final, var_factor, apr_data, apr_key),
                     lambda w: self._normal_done(w, t0, normal_bench), "Computing the normal matrix")
 
@@ -1706,7 +1727,7 @@ class OperationsWidget(QWidget):
             benchmark.cancel(normal_bench)
             QMessageBox.critical(self, "Error", str(worker.error))
             return
-        N, self._apriori_matrix = worker.result
+        N, self._apriori_matrix, self._apriori_info = worker.result
 
         self._normal_matrix = N
         # new N -> clear past data
@@ -1727,6 +1748,8 @@ class OperationsWidget(QWidget):
         QMessageBox.information(self, "Success", "Normal matrix computed.")
 
     def compute_u_vector(self):
+        if self._refuse_non_station():
+            return
         t0 = time.time()
         parent_app = self.window()
         if self._normal_matrix is None:
@@ -1757,16 +1780,18 @@ class OperationsWidget(QWidget):
             QMessageBox.critical(self, "Error", str(exc))
             return
 
-        u, dx = normal_math.compute_u(self._normal_matrix, est_data, apr_data)
+        u, dx = normal_math.compute_u(self._normal_matrix, est_data, apr_data, self._apriori_info)
         self._u_vector = u
         self._dx_vector = dx  # store for reverse ver
         dur = time.time() - t0
         logger.info(f"Computed u in {dur:.3f}s, shape={u.shape}")
-        QMessageBox.information(self, "Success", "u = N*(Xest - Xapr) computed.")
+        QMessageBox.information(self, "Success", "u = inv(Qx)(Xest - Xapr) computed.")
 
     def reverse_verify(self):
+        if self._refuse_non_station():
+            return
         self._start(normal_math.recomputation_check,
-                    (self._normal_matrix, self._u_vector, self._dx_vector),
+                    (self._normal_matrix, self._u_vector, self._dx_vector, self._apriori_info),
                     self._verify_done, "Running the recomputation check")
 
     def _verify_done(self, worker):
@@ -3463,14 +3488,17 @@ class FileInfoWidget(QWidget):
 
         self.station_label = QLabel("Stations Found (SITE/ID): --")
         self.aprcov_label = QLabel("Apriori Covariance Found: --")
+        self.non_station_label = QLabel("Non-station Parameters Found: --")
         # font styling
         label_style = "font-size: 18px;"
         self.vf_label.setStyleSheet(label_style)
         self.station_label.setStyleSheet(label_style)
         self.aprcov_label.setStyleSheet(label_style)
+        self.non_station_label.setStyleSheet(label_style)
         layout.addLayout(vf_row)
         layout.addWidget(self.station_label)
         layout.addWidget(self.aprcov_label)
+        layout.addWidget(self.non_station_label)
         layout.addStretch(1) # push labels
 
     def _open_vf_dialog(self):
@@ -3522,9 +3550,17 @@ class FileInfoWidget(QWidget):
             self.aprcov_label.setText("Apriori Covariance Found: True")
         else:
             self.aprcov_label.setText("Apriori Covariance Found: False")
+        counts = datum_math.non_station_counts(current_blocks.get('SOLUTION/ESTIMATE'))
+        self.non_station_label.setText(f"Non-station Parameters Found: {sum(counts.values())}")
+        self.non_station_label.setToolTip(datum_math.non_station_text(counts) if counts else "")
+        self.non_station_label.setStyleSheet(
+            "font-size: 18px;" + (f" color: {tone_color('warn', self.non_station_label)};" if counts else ""))
 
     def clear_display(self):
         set_status(self.vf_label, "Variance Factor: --", "font-size: 18px;")
         set_status(self.station_label, "Stations Found (SITE/ID): --", "font-size: 18px;")
         self.aprcov_label.setText("Apriori Covariance Found: --")
+        self.non_station_label.setText("Non-station Parameters Found: --")
+        self.non_station_label.setToolTip("")
+        self.non_station_label.setStyleSheet("font-size: 18px;")
 
