@@ -1,0 +1,114 @@
+SINEX TRF Studio diagnostics report
+========================================================================
+
+Provenance
+------------------------------------------------------------------------
+  file: COE08827.SNX
+  size: 210726 bytes
+  SHA-256: 2fcb02ebe9e4a21e294b9458d933b260a75330efc3b2bf729d40f51a36cdb641
+  SINEX header: agency COD, data agency COD, data span 96:336:00000 to 96:342:86369
+  parameters: 111, stations: 37, station episodes: 37
+  SINEX TRF Studio 1.5.2, Python 3.12.14, numpy 2.5.3, BLAS accelerate unknown
+  date: 2026-10-08T20:24:14+03:00
+  reference epochs of the positions used: 96:338:86385 (6), 96:339:43185 (60)
+  WARNING: the positions used have 2 different reference epochs. The datum model assumes one shared epoch.
+  filter: auto, position 0.001 m, velocity 0.003 m/yr, 15 episodes excluded
+  filter tag: _filtered_p1mm_v3mmyr
+
+Sigma Theta
+------------------------------------------------------------------------
+                    tx            ty            tz            ds            rx            ry            rz
+  tx       1.26293e-06   1.33853e-07  -9.90437e-07   6.38572e-15   3.99941e-14  -2.49653e-13    1.3406e-14
+  ty       1.33853e-07   5.16691e-06  -1.01272e-06   2.89058e-14   6.42625e-13  -1.19355e-13   -5.1075e-13
+  tz      -9.90437e-07  -1.01272e-06   1.17262e-06  -2.49545e-14  -1.47555e-13   2.34318e-13   7.86533e-14
+  ds       6.38572e-15   2.89058e-14  -2.49545e-14   2.72138e-21   3.92856e-21  -3.15076e-21  -2.65258e-21
+  rx       3.99941e-14   6.42625e-13  -1.47555e-13   3.92856e-21   8.07377e-20  -1.97728e-20  -6.27642e-20
+  ry      -2.49653e-13  -1.19355e-13   2.34318e-13  -3.15076e-21  -1.97728e-20   5.32672e-20   6.48362e-21
+  rz        1.3406e-14   -5.1075e-13   7.86533e-14  -2.65258e-21  -6.27642e-20   6.48362e-21   5.14921e-20
+  diagonal: 1.26293e-06 5.16691e-06 1.17262e-06 2.72138e-21 8.07377e-20 5.32672e-20 5.14921e-20
+  condition number: 4.45701e+16
+  symmetry error max|S - S^T|: 3.95988e-20
+  eigenvalues: 1.22091e-22 1.59819e-22 6.33923e-22 1.58507e-21 1.3961e-07 2.02125e-06 5.4416e-06
+  smallest eigenvalue: 1.22091e-22
+  negative diagonal entries: 0
+  block traces: translation 7.60246e-06, scale 2.72138e-21, rotation 1.85497e-19
+
+Cross correlations
+------------------------------------------------------------------------
+                    tx            ty            tz            ds            rx            ry            rz
+  tx                 1     0.0523989     -0.813876      0.108924      0.125247     -0.962535     0.0525701
+  ty         0.0523989             1     -0.411431      0.243767      0.994956     -0.227508     -0.990199
+  tz         -0.813876     -0.411431             1     -0.441751     -0.479555      0.937556      0.320087
+  ds          0.108924      0.243767     -0.441751             1      0.265033     -0.261693      -0.22408
+  rx          0.125247      0.994956     -0.479555      0.265033             1     -0.301509     -0.973427
+  ry         -0.962535     -0.227508      0.937556     -0.261693     -0.301509             1      0.123799
+  rz         0.0525701     -0.990199      0.320087      -0.22408     -0.973427      0.123799             1
+  largest |r| between different parameters:
+       ty rx      0.994956
+       ty rz     -0.990199
+       rx rz     -0.973427
+       tx ry     -0.962535
+       tz ry      0.937556
+       tx tz     -0.813876
+       tz rx     -0.479555
+       tz ds     -0.441751
+       ty tz     -0.411431
+       tz rz      0.320087
+  pairs with |r| > 0.5: 6, |r| > 0.9: 5
+
+Helmert parameter sigmas
+------------------------------------------------------------------------
+  name             SI unit     unfiltered     ratio     literature unit      at surface
+  tx        0.0011238 m          0.001102   1.01979         1.1238 mm      
+  ty       0.00227308 m        0.00154676   1.46957        2.27308 mm      
+  tz       0.00108287 m       0.000780885   1.38673        1.08287 mm      
+  ds      5.21668e-11 1       5.87269e-11  0.888295      0.0521668 ppb         0.332727 mm
+  rx      2.84144e-10 rad     2.02726e-10   1.40162      0.0586089 mas          1.81231 mm
+  ry      2.30797e-10 rad     2.00584e-10   1.15062      0.0476053 mas          1.47205 mm
+  rz      2.26919e-10 rad     1.37499e-10   1.65033      0.0468054 mas          1.44732 mm
+  at surface: multiplied by the equatorial radius, 6378137 m; rates are per year
+
+  literature order, mm and mm/yr at the surface:
+         tx        ty        tz        rx        ry        rz        ds
+     1.1238   2.27308   1.08287   1.81231   1.47205   1.44732  0.332727
+
+Network geometry
+------------------------------------------------------------------------
+  episodes used: 22, stations: 22, stations with velocities: 0
+  E: 66 x 7, rank 7 (column scaled)
+  cond(E^T E): 7.09141e+15, column scaled: 504.342
+  episodes north 22, south 0, east 20, west 2
+  geocentric latitude 38.9476 to 69.537 deg, longitude -4.24966 to 32.7585 deg
+  eigenvalues of the mean outer product of the station unit vectors: 0.00936379 0.014188 0.976448
+  excluded episodes: 15
+    EBRE.A.1         position sigma                     0.00100206
+    HFLK.A.1         position sigma                     0.00125358
+    KELY.A.1         position sigma                     0.00209047
+    KIRU.A.1         position sigma                     0.00160063
+    MASP.A.1         position sigma                     0.00116851
+    MDVO.A.1         position sigma                     0.00103888
+    METS.A.1         position sigma                     0.00101342
+    NOTO.A.1         position sigma                     0.00101825
+    NYAL.A.1         position sigma                     0.00263762
+    ONSA.A.1         position sigma                     0.00103422
+    REYK.A.1         position sigma                     0.00107365
+    SFER.A.1         position sigma                      0.0011844
+    THU1.A.1         position sigma                     0.00179636
+    WETT.A.1         position sigma                     0.00118852
+    ZWEN.A.1         position sigma                     0.00109728
+
+Input precision
+------------------------------------------------------------------------
+  type     unit         count    zero          min       median         mean          max
+  STAX     m               37       0   9.7171e-05   0.00073455  0.000705167    0.0011844
+  STAY     m               37       0   8.1755e-05   0.00024671  0.000255268   0.00075191
+  STAZ     m               37       0   0.00010124   0.00088661  0.000945413    0.0026376
+  zero sigmas are left out of min, median, mean and max
+
+  covariance sigmas, used against excluded episodes:
+                         count          min       median         mean          max
+    used position           66  8.17547e-05  0.000683527  0.000527976  0.000997149
+    used velocity            0          n/a          n/a          n/a          n/a
+    excluded position       45  0.000134327  0.000694247  0.000792663   0.00263762
+    excluded velocity        0          n/a          n/a          n/a          n/a
+  covariance rows used: 66, smallest diagonal 6.68384e-09, non positive diagonal 0, symmetry error 0

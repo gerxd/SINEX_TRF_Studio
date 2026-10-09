@@ -1,0 +1,23 @@
+{
+  "command": "normal",
+  "version": "1.5.2",
+  "file": "COE08827.SNX",
+  "variance_factor": 4.67e-06,
+  "n": 111,
+  "recomputation_check": [
+    "------ Performing Recomputation Check ------",
+    "Original dx norm: 1.693910e-01",
+    "Recomputed dx norm: 1.693910e-01",
+    "Difference Norm (L2): 1.790900e-15",
+    "Max Absolute Difference: 5.273559e-16",
+    "Relative Error: 1.057258e-14 (or 0.0000%)",
+    "PASS: relative_error <= 1e-6"
+  ],
+  "written": [
+    "normal/COE08827_NormalMatrix.csv",
+    "normal/COE08827_u_Vector.csv",
+    "normal/COE08827_Covariance_Apriori_Matrix.csv"
+  ],
+  "rank": 111,
+  "rank_deficiency": 0
+}

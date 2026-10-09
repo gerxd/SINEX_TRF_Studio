@@ -1,0 +1,98 @@
+SINEX TRF Studio diagnostics report
+========================================================================
+
+Provenance
+------------------------------------------------------------------------
+  file: CRI23527.SNX
+  size: 1012278 bytes
+  SHA-256: b88c4c274067e1566d0dff5439694a563e1690dbd8bf5572fc6fc0b254c98d53
+  SINEX header: agency XYZ, data agency IGS, data span 25:033:00000 to 25:039:86370
+  parameters: 261, stations: 87, station episodes: 87
+  SINEX TRF Studio 1.5.2, Python 3.12.14, numpy 2.5.3, BLAS accelerate unknown
+  date: 2026-10-08T20:24:13+03:00
+  reference epochs of the positions used: 25:036:43200 (261)
+  filter: none
+  filter tag: none
+
+Sigma Theta
+------------------------------------------------------------------------
+                    tx            ty            tz            ds            rx            ry            rz
+  tx       1.59453e-07   2.92831e-08  -2.83622e-08    2.9624e-15  -4.43503e-16  -4.52814e-15  -5.86282e-15
+  ty       2.92831e-08   2.36201e-07   -6.6599e-08   7.38187e-15   5.31362e-15  -2.18206e-16   1.08213e-15
+  tz      -2.83622e-08   -6.6599e-08   2.85345e-07  -9.21459e-15   8.56563e-15  -8.84439e-16   6.28963e-16
+  ds        2.9624e-15   7.38187e-15  -9.21459e-15   6.02553e-22  -1.94666e-22  -7.68573e-23  -1.00884e-22
+  rx      -4.43503e-16   5.31362e-15   8.56563e-15  -1.94666e-22   1.09812e-21  -9.21029e-23   1.14832e-22
+  ry      -4.52814e-15  -2.18206e-16  -8.84439e-16  -7.68573e-23  -9.21029e-23   4.67135e-22   4.34359e-22
+  rz      -5.86282e-15   1.08213e-15   6.28963e-16  -1.00884e-22   1.14832e-22   4.34359e-22   7.39858e-22
+  diagonal: 1.59453e-07 2.36201e-07 2.85345e-07 6.02553e-22 1.09812e-21 4.67135e-22 7.39858e-22
+  condition number: 3.1236e+15
+  symmetry error max|S - S^T|: 2.50139e-21
+  eigenvalues: 1.09046e-22 1.5907e-22 6.23985e-22 7.0407e-22 1.49183e-07 1.91199e-07 3.40617e-07
+  smallest eigenvalue: 1.09046e-22
+  negative diagonal entries: 0
+  block traces: translation 6.80999e-07, scale 6.02553e-22, rotation 2.30511e-21
+
+Cross correlations
+------------------------------------------------------------------------
+                    tx            ty            tz            ds            rx            ry            rz
+  tx                 1       0.15089     -0.132965      0.302224    -0.0335162     -0.524666     -0.539779
+  ty           0.15089             1     -0.256532      0.618767      0.329932    -0.0207733     0.0818589
+  tz         -0.132965     -0.256532             1     -0.702738      0.483893    -0.0766059     0.0432879
+  ds          0.302224      0.618767     -0.702738             1     -0.239314     -0.144866     -0.151096
+  rx        -0.0335162      0.329932      0.483893     -0.239314             1     -0.128596      0.127398
+  ry         -0.524666    -0.0207733    -0.0766059     -0.144866     -0.128596             1      0.738845
+  rz         -0.539779     0.0818589     0.0432879     -0.151096      0.127398      0.738845             1
+  largest |r| between different parameters:
+       ry rz      0.738845
+       tz ds     -0.702738
+       ty ds      0.618767
+       tx rz     -0.539779
+       tx ry     -0.524666
+       tz rx      0.483893
+       ty rx      0.329932
+       tx ds      0.302224
+       ty tz     -0.256532
+       ds rx     -0.239314
+  pairs with |r| > 0.5: 5, |r| > 0.9: 0
+
+Helmert parameter sigmas
+------------------------------------------------------------------------
+  name             SI unit     unfiltered     ratio     literature unit      at surface
+  tx      0.000399315 m       0.000399315         1       0.399315 mm      
+  ty      0.000486005 m       0.000486005         1       0.486005 mm      
+  tz      0.000534177 m       0.000534177         1       0.534177 mm      
+  ds       2.4547e-11 1        2.4547e-11         1       0.024547 ppb         0.156564 mm
+  rx      3.31379e-11 rad     3.31379e-11         1     0.00683518 mas         0.211358 mm
+  ry      2.16133e-11 rad     2.16133e-11         1     0.00445806 mas         0.137853 mm
+  rz      2.72003e-11 rad     2.72003e-11         1     0.00561047 mas         0.173487 mm
+  at surface: multiplied by the equatorial radius, 6378137 m; rates are per year
+
+  literature order, mm and mm/yr at the surface:
+         tx        ty        tz        rx        ry        rz        ds
+   0.399315  0.486005  0.534177  0.211358  0.137853  0.173487  0.156564
+
+Network geometry
+------------------------------------------------------------------------
+  episodes used: 87, stations: 87, stations with velocities: 0
+  E: 261 x 7, rank 7 (column scaled)
+  cond(E^T E): 7.50683e+14, column scaled: 81.1631
+  episodes north 70, south 17, east 0, west 87
+  geocentric latitude -4.5675 to 79.9229 deg, longitude -176.663 to -21.9503 deg
+  eigenvalues of the mean outer product of the station unit vectors: 0.0296115 0.178399 0.79199
+  excluded episodes: 0
+
+Input precision
+------------------------------------------------------------------------
+  type     unit         count    zero          min       median         mean          max
+  STAX     m               87       0  0.000329019  0.000349734  0.000360477  0.000599542
+  STAY     m               87       0  0.000406417  0.000466641  0.000480738  0.000697385
+  STAZ     m               87       0  0.000431143  0.000465436  0.000465548  0.000516314
+  zero sigmas are left out of min, median, mean and max
+
+  covariance sigmas, used against excluded episodes:
+                         count          min       median         mean          max
+    used position          261  0.000329019  0.000451904  0.000435588  0.000697385
+    used velocity            0          n/a          n/a          n/a          n/a
+    excluded position        0          n/a          n/a          n/a          n/a
+    excluded velocity        0          n/a          n/a          n/a          n/a
+  covariance rows used: 261, smallest diagonal 1.08253e-07, non positive diagonal 0, symmetry error 0

@@ -1,0 +1,99 @@
+SINEX TRF Studio diagnostics report
+========================================================================
+
+Provenance
+------------------------------------------------------------------------
+  file: COE08827.SNX
+  size: 210726 bytes
+  SHA-256: 2fcb02ebe9e4a21e294b9458d933b260a75330efc3b2bf729d40f51a36cdb641
+  SINEX header: agency COD, data agency COD, data span 96:336:00000 to 96:342:86369
+  parameters: 111, stations: 37, station episodes: 37
+  SINEX TRF Studio 1.5.2, Python 3.12.14, numpy 2.5.3, BLAS accelerate unknown
+  date: 2026-10-08T20:24:00+03:00
+  reference epochs of the positions used: 96:337:86385 (3), 96:338:86385 (18), 96:339:43185 (90)
+  WARNING: the positions used have 3 different reference epochs. The datum model assumes one shared epoch.
+  filter: none
+  filter tag: none
+
+Sigma Theta
+------------------------------------------------------------------------
+                    tx            ty            tz            ds            rx            ry            rz
+  tx        1.2144e-06   2.50995e-07  -7.07743e-07  -3.34698e-14   3.49973e-14  -2.15659e-13  -1.41863e-14
+  ty       2.50995e-07   2.39248e-06  -2.38207e-07   -3.2975e-14   3.12609e-13  -5.05155e-14  -2.10959e-13
+  tz      -7.07743e-07  -2.38207e-07   6.09781e-07   1.09385e-14   -3.3865e-14   1.44245e-13    1.7238e-14
+  ds      -3.34698e-14   -3.2975e-14   1.09385e-14   3.44885e-21  -4.31523e-21   5.10598e-21   2.63587e-21
+  rx       3.49973e-14   3.12609e-13   -3.3865e-14  -4.31523e-21   4.10977e-20  -7.10852e-21  -2.74445e-20
+  ry      -2.15659e-13  -5.05155e-14   1.44245e-13   5.10598e-21  -7.10852e-21    4.0234e-20   3.15397e-21
+  rz      -1.41863e-14  -2.10959e-13    1.7238e-14   2.63587e-21  -2.74445e-20   3.15397e-21   1.89059e-20
+  diagonal: 1.2144e-06 2.39248e-06 6.09781e-07 3.44885e-21 4.10977e-20 4.0234e-20 1.89059e-20
+  condition number: 1.95081e+16
+  symmetry error max|S - S^T|: 9.1056e-21
+  eigenvalues: 1.29727e-22 1.79865e-22 3.60429e-22 1.76254e-21 1.40805e-07 1.54512e-06 2.53074e-06
+  smallest eigenvalue: 1.29727e-22
+  negative diagonal entries: 0
+  block traces: translation 4.21666e-06, scale 3.44885e-21, rotation 1.00238e-19
+
+Cross correlations
+------------------------------------------------------------------------
+                    tx            ty            tz            ds            rx            ry            rz
+  tx                 1      0.147251     -0.822446     -0.517172      0.156655     -0.975638    -0.0936242
+  ty          0.147251             1     -0.197217     -0.363014      0.996939     -0.162819     -0.991915
+  tz         -0.822446     -0.197217             1      0.238525     -0.213922      0.920912      0.160546
+  ds         -0.517172     -0.363014      0.238525             1     -0.362458      0.433456      0.326428
+  rx          0.156655      0.996939     -0.213922     -0.362458             1     -0.174813     -0.984572
+  ry         -0.975638     -0.162819      0.920912      0.433456     -0.174813             1      0.114357
+  rz        -0.0936242     -0.991915      0.160546      0.326428     -0.984572      0.114357             1
+  largest |r| between different parameters:
+       ty rx      0.996939
+       ty rz     -0.991915
+       rx rz     -0.984572
+       tx ry     -0.975638
+       tz ry      0.920912
+       tx tz     -0.822446
+       tx ds     -0.517172
+       ds ry      0.433456
+       ty ds     -0.363014
+       ds rx     -0.362458
+  pairs with |r| > 0.5: 7, |r| > 0.9: 5
+
+Helmert parameter sigmas
+------------------------------------------------------------------------
+  name             SI unit     unfiltered     ratio     literature unit      at surface
+  tx         0.001102 m          0.001102         1          1.102 mm      
+  ty       0.00154676 m        0.00154676         1        1.54676 mm      
+  tz      0.000780885 m       0.000780885         1       0.780885 mm      
+  ds      5.87269e-11 1       5.87269e-11         1      0.0587269 ppb         0.374568 mm
+  rx      2.02726e-10 rad     2.02726e-10         1      0.0418152 mas          1.29301 mm
+  ry      2.00584e-10 rad     2.00584e-10         1      0.0413735 mas          1.27935 mm
+  rz      1.37499e-10 rad     1.37499e-10         1      0.0283612 mas         0.876986 mm
+  at surface: multiplied by the equatorial radius, 6378137 m; rates are per year
+
+  literature order, mm and mm/yr at the surface:
+         tx        ty        tz        rx        ry        rz        ds
+      1.102   1.54676  0.780885   1.29301   1.27935  0.876986  0.374568
+
+Network geometry
+------------------------------------------------------------------------
+  episodes used: 37, stations: 37, stations with velocities: 0
+  E: 111 x 7, rank 7 (column scaled)
+  cond(E^T E): 1.61419e+15, column scaled: 174.806
+  episodes north 37, south 0, east 30, west 7
+  geocentric latitude 27.6054 to 78.8568 deg, longitude -68.788 to 37.2236 deg
+  eigenvalues of the mean outer product of the station unit vectors: 0.0230101 0.0417611 0.935229
+  excluded episodes: 0
+
+Input precision
+------------------------------------------------------------------------
+  type     unit         count    zero          min       median         mean          max
+  STAX     m               37       0   9.7171e-05   0.00073455  0.000705167    0.0011844
+  STAY     m               37       0   8.1755e-05   0.00024671  0.000255268   0.00075191
+  STAZ     m               37       0   0.00010124   0.00088661  0.000945413    0.0026376
+  zero sigmas are left out of min, median, mean and max
+
+  covariance sigmas, used against excluded episodes:
+                         count          min       median         mean          max
+    used position          111  8.17547e-05  0.000685867  0.000635282   0.00263762
+    used velocity            0          n/a          n/a          n/a          n/a
+    excluded position        0          n/a          n/a          n/a          n/a
+    excluded velocity        0          n/a          n/a          n/a          n/a
+  covariance rows used: 111, smallest diagonal 6.68384e-09, non positive diagonal 0, symmetry error 0

@@ -1,0 +1,23 @@
+{
+  "command": "normal",
+  "version": "1.5.2",
+  "file": "CRI23527.SNX",
+  "variance_factor": 0.596846752908865,
+  "n": 261,
+  "recomputation_check": [
+    "------ Performing Recomputation Check ------",
+    "Original dx norm: 1.526485e-01",
+    "Recomputed dx norm: 1.526485e-01",
+    "Difference Norm (L2): 3.269378e-14",
+    "Max Absolute Difference: 9.353629e-15",
+    "Relative Error: 2.141770e-13 (or 0.0000%)",
+    "PASS: relative_error <= 1e-6"
+  ],
+  "written": [
+    "normal/CRI23527_NormalMatrix.csv",
+    "normal/CRI23527_u_Vector.csv",
+    "normal/CRI23527_Covariance_Apriori_Matrix.csv"
+  ],
+  "rank": 261,
+  "rank_deficiency": 0
+}
